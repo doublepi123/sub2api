@@ -21,8 +21,12 @@ import (
 var kiroRefreshLocks sync.Map
 
 func kiroAccountLock(accountID int64) *sync.Mutex {
-	lock, _ := kiroRefreshLocks.LoadOrStore(accountID, &sync.Mutex{})
-	return lock.(*sync.Mutex)
+	value, _ := kiroRefreshLocks.LoadOrStore(accountID, &sync.Mutex{})
+	lock, ok := value.(*sync.Mutex)
+	if !ok {
+		panic("kiro refresh lock has unexpected type")
+	}
+	return lock
 }
 
 func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) (*ForwardResult, error) {

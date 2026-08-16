@@ -30,19 +30,21 @@ func TestBuildRequestConvertsHistoryToolsAndSanitizesSchema(t *testing.T) {
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(payload, &got))
 	require.Equal(t, "arn:test", got["profileArn"])
-	state := got["conversationState"].(map[string]any)
-	history := state["history"].([]any)
+	state := requireMap(t, got["conversationState"])
+	history := requireSlice(t, state["history"])
 	require.Len(t, history, 2)
-	first := history[0].(map[string]any)["userInputMessage"].(map[string]any)
+	first := requireMap(t, requireMap(t, history[0])["userInputMessage"])
 	require.Contains(t, first["content"], "system rules")
-	assistant := history[1].(map[string]any)["assistantResponseMessage"].(map[string]any)
+	assistant := requireMap(t, requireMap(t, history[1])["assistantResponseMessage"])
 	require.Len(t, assistant["toolUses"], 1)
-	current := state["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	current := requireMap(t, requireMap(t, state["currentMessage"])["userInputMessage"])
 	require.Equal(t, "claude-haiku-4.5", current["modelId"])
-	ctx := current["userInputMessageContext"].(map[string]any)
+	ctx := requireMap(t, current["userInputMessageContext"])
 	require.Len(t, ctx["toolResults"], 1)
-	tools := ctx["tools"].([]any)
-	schema := tools[0].(map[string]any)["toolSpecification"].(map[string]any)["inputSchema"].(map[string]any)["json"].(map[string]any)
+	tools := requireSlice(t, ctx["tools"])
+	spec := requireMap(t, requireMap(t, tools[0])["toolSpecification"])
+	inputSchema := requireMap(t, spec["inputSchema"])
+	schema := requireMap(t, inputSchema["json"])
 	require.NotContains(t, schema, "required")
 	require.NotContains(t, schema, "additionalProperties")
 }
@@ -57,7 +59,8 @@ func TestTransformResponseTextAndToolEvents(t *testing.T) {
 	}
 	var source bytes.Buffer
 	for _, event := range events {
-		source.Write(encodeEvent(t, event))
+		_, err := source.Write(encodeEvent(t, event))
+		require.NoError(t, err)
 	}
 	var out bytes.Buffer
 	require.NoError(t, TransformResponse(&oneByteReader{r: bytes.NewReader(source.Bytes())}, &out, "claude-haiku-4.5", 12, true))
@@ -73,8 +76,10 @@ func TestTransformResponseTextAndToolEvents(t *testing.T) {
 
 func TestTransformResponseBufferedAnthropicJSON(t *testing.T) {
 	var source bytes.Buffer
-	source.Write(encodeEvent(t, []byte(`{"content":"KIRO_OK"}`)))
-	source.Write(encodeEvent(t, []byte(`{"stopReason":"END_TURN"}`)))
+	_, err := source.Write(encodeEvent(t, []byte(`{"content":"KIRO_OK"}`)))
+	require.NoError(t, err)
+	_, err = source.Write(encodeEvent(t, []byte(`{"stopReason":"END_TURN"}`)))
+	require.NoError(t, err)
 	var out bytes.Buffer
 	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 4, false))
 
@@ -82,8 +87,9 @@ func TestTransformResponseBufferedAnthropicJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
 	require.Equal(t, "claude-haiku-4.5", response["model"])
 	require.Equal(t, "end_turn", response["stop_reason"])
-	require.Equal(t, "KIRO_OK", response["content"].([]any)[0].(map[string]any)["text"])
-	require.Equal(t, float64(4), response["usage"].(map[string]any)["input_tokens"])
+	content := requireSlice(t, response["content"])
+	require.Equal(t, "KIRO_OK", requireMap(t, content[0])["text"])
+	require.Equal(t, float64(4), requireMap(t, response["usage"])["input_tokens"])
 }
 
 func TestDecodeEventStreamRejectsBadCRC(t *testing.T) {
@@ -102,15 +108,32 @@ func TestTransformResponseRejectsTruncatedEvent(t *testing.T) {
 
 func TestToolUseContributesToEstimatedOutputTokens(t *testing.T) {
 	var source bytes.Buffer
-	source.Write(encodeEvent(t, []byte(`{"name":"lookup","toolUseId":"tool_1","input":{}}`)))
-	source.Write(encodeEvent(t, []byte(`{"input":"{\"q\":\"long tool argument\"}"}`)))
-	source.Write(encodeEvent(t, []byte(`{"stopReason":"END_TURN"}`)))
+	_, err := source.Write(encodeEvent(t, []byte(`{"name":"lookup","toolUseId":"tool_1","input":{}}`)))
+	require.NoError(t, err)
+	_, err = source.Write(encodeEvent(t, []byte(`{"input":"{\"q\":\"long tool argument\"}"}`)))
+	require.NoError(t, err)
+	_, err = source.Write(encodeEvent(t, []byte(`{"stopReason":"END_TURN"}`)))
+	require.NoError(t, err)
 	var out bytes.Buffer
 	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 1, false))
 
 	var response map[string]any
 	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
-	require.Positive(t, response["usage"].(map[string]any)["output_tokens"])
+	require.Positive(t, requireMap(t, response["usage"])["output_tokens"])
+}
+
+func requireMap(t *testing.T, value any) map[string]any {
+	t.Helper()
+	result, ok := value.(map[string]any)
+	require.True(t, ok)
+	return result
+}
+
+func requireSlice(t *testing.T, value any) []any {
+	t.Helper()
+	result, ok := value.([]any)
+	require.True(t, ok)
+	return result
 }
 
 type oneByteReader struct{ r io.Reader }

@@ -392,11 +392,9 @@ type streamState struct {
 // Anthropic event stream or a buffered Anthropic Messages response.
 func TransformResponse(src io.Reader, dst io.Writer, model string, inputTokens int, stream bool) error {
 	state := &streamState{model: model, id: "msg_" + strings.ReplaceAll(uuid.NewString(), "-", ""), inputTokens: inputTokens}
-	var sink io.Writer = io.Discard
 	var buffered bytes.Buffer
-	if stream {
-		sink = dst
-	} else {
+	sink := dst
+	if !stream {
 		sink = &buffered
 	}
 	if err := state.emitStart(sink); err != nil {
@@ -458,7 +456,7 @@ func (s *streamState) consume(w io.Writer, payload []byte) error {
 			}
 		}
 		s.blocks[s.active].Text += content
-		s.outputText.WriteString(content)
+		_, _ = s.outputText.WriteString(content)
 		return writeSSE(w, "content_block_delta", map[string]any{"type": "content_block_delta", "index": s.active, "delta": map[string]any{"type": "text_delta", "text": content}})
 	}
 	if name, ok := obj["name"].(string); ok {
@@ -537,10 +535,10 @@ func (s *streamState) emitFinish(w io.Writer) error {
 func (s *streamState) estimatedOutputTokens() int {
 	var output strings.Builder
 	for _, block := range s.blocks {
-		output.WriteString(block.Text)
+		_, _ = output.WriteString(block.Text)
 		if block.Type == "tool_use" {
-			output.WriteString(block.Name)
-			output.Write(block.Input)
+			_, _ = output.WriteString(block.Name)
+			_, _ = output.Write(block.Input)
 		}
 	}
 	return estimateTokens([]byte(output.String()))
