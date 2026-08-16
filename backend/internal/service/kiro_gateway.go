@@ -141,6 +141,65 @@ func (s *GatewayService) sendKiroRequest(ctx context.Context, account *Account, 
 	return s.httpUpstream.DoWithTLS(req, accountProxyURL(account), account.ID, account.Concurrency, s.kiroTLSProfile(account))
 }
 
+// FetchKiroUsageLimits queries the same read-only credits endpoint used by the
+// Kiro client. It shares the gateway token refresh and proxy/TLS path so quota
+// display cannot drift from the credentials used for model requests.
+func (s *GatewayService) FetchKiroUsageLimits(ctx context.Context, account *Account) (*kiro.UsageLimitsResponse, error) {
+	if account == nil || account.Platform != PlatformKiro {
+		return nil, errors.New("kiro account is required")
+	}
+	accessToken, err := s.kiroAccessToken(ctx, account, false)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.sendKiroUsageLimitsRequest(ctx, account, accessToken)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		_ = resp.Body.Close()
+		accessToken, err = s.kiroAccessToken(ctx, account, true)
+		if err != nil {
+			return nil, err
+		}
+		resp, err = s.sendKiroUsageLimitsRequest(ctx, account, accessToken)
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	const maxUsageResponseSize = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxUsageResponseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read kiro usage limits: %w", err)
+	}
+	if len(body) > maxUsageResponseSize {
+		return nil, errors.New("kiro usage limits response is too large")
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, &kiro.UsageLimitsHTTPError{StatusCode: resp.StatusCode}
+	}
+	var result kiro.UsageLimitsResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("decode kiro usage limits: %w", err)
+	}
+	return &result, nil
+}
+
+func (s *GatewayService) sendKiroUsageLimitsRequest(ctx context.Context, account *Account, accessToken string) (*http.Response, error) {
+	req, err := kiro.NewUsageLimitsRequest(
+		ctx,
+		account.GetCredential("region"),
+		account.GetCredential("profile_arn"),
+		accessToken,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return s.httpUpstream.DoWithTLS(req, accountProxyURL(account), account.ID, account.Concurrency, s.kiroTLSProfile(account))
+}
+
 func (s *GatewayService) kiroAccessToken(ctx context.Context, account *Account, force bool) (string, error) {
 	lock := kiroAccountLock(account.ID)
 	lock.Lock()

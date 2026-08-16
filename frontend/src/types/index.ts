@@ -1312,6 +1312,19 @@ export interface GrokBillingSummary {
   failed_windows?: string[]
 }
 
+export interface KiroSubscriptionQuota {
+  subscription_type?: string
+  subscription_title?: string
+  resource_type?: string
+  unit?: string
+  current_usage: number
+  usage_limit: number
+  remaining: number
+  usage_percent: number
+  overage_usage?: number
+  next_reset_at?: string | null
+}
+
 export interface AccountUsageInfo {
   source?: 'passive' | 'active'
   updated_at: string | null
@@ -1348,6 +1361,7 @@ export interface AccountUsageInfo {
     amount?: number
     minimum_balance?: number
   }> | null
+  kiro_subscription?: KiroSubscriptionQuota | null
   // Antigravity 403 forbidden 状态
   is_forbidden?: boolean
   forbidden_reason?: string

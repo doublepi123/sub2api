@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -104,12 +106,19 @@ type antigravityUsageCache struct {
 	timestamp time.Time
 }
 
+type kiroUsageCache struct {
+	usageInfo *UsageInfo
+	timestamp time.Time
+}
+
 const (
 	apiCacheTTL             = 3 * time.Minute
 	apiErrorCacheTTL        = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
 	antigravityErrorTTL     = 1 * time.Minute        // Antigravity 错误缓存 TTL（可恢复错误）
 	apiQueryMaxJitter       = 800 * time.Millisecond // 用量查询最大随机延迟
 	windowStatsCacheTTL     = 1 * time.Minute
+	kiroUsageCacheTTL       = 5 * time.Minute
+	kiroUsageErrorCacheTTL  = 1 * time.Minute
 	openAIProbeCacheTTL     = 10 * time.Minute
 	grokProbeRetryTTL       = 1 * time.Minute
 	grokFreeQuotaWindow     = 24 * time.Hour
@@ -121,8 +130,10 @@ type UsageCache struct {
 	apiCache          sync.Map           // accountID -> *apiUsageCache
 	windowStatsCache  sync.Map           // accountID -> *windowStatsCache
 	antigravityCache  sync.Map           // accountID -> *antigravityUsageCache
+	kiroUsageCache    sync.Map           // accountID -> *kiroUsageCache
 	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
 	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
+	kiroUsageFlight   singleflight.Group // 防止同一 Kiro 账号的并发额度查询击穿缓存
 	openAIProbeCache  sync.Map           // accountID -> time.Time
 	grokProbeCache    sync.Map           // accountID -> last billing probe attempt
 }
@@ -180,6 +191,21 @@ type AICredit struct {
 	MinimumBalance float64 `json:"minimum_balance,omitempty"`
 }
 
+// KiroSubscriptionQuota is the normalized credits view returned by Kiro's
+// GetUsageLimits operation.
+type KiroSubscriptionQuota struct {
+	SubscriptionType  string     `json:"subscription_type,omitempty"`
+	SubscriptionTitle string     `json:"subscription_title,omitempty"`
+	ResourceType      string     `json:"resource_type,omitempty"`
+	Unit              string     `json:"unit,omitempty"`
+	CurrentUsage      float64    `json:"current_usage"`
+	UsageLimit        float64    `json:"usage_limit"`
+	Remaining         float64    `json:"remaining"`
+	UsagePercent      float64    `json:"usage_percent"`
+	OverageUsage      float64    `json:"overage_usage,omitempty"`
+	NextResetAt       *time.Time `json:"next_reset_at,omitempty"`
+}
+
 // UsageInfo 账号使用量信息
 type UsageInfo struct {
 	Source             string         `json:"source,omitempty"`               // "passive" or "active"
@@ -225,6 +251,9 @@ type UsageInfo struct {
 
 	// Antigravity AI Credits 余额
 	AICredits []AICredit `json:"ai_credits,omitempty"`
+
+	// Kiro 官方 credits 额度
+	KiroSubscription *KiroSubscriptionQuota `json:"kiro_subscription,omitempty"`
 
 	// Antigravity 废弃模型转发规则 (old_model_id -> new_model_id)
 	ModelForwardingRules map[string]string `json:"model_forwarding_rules,omitempty"`
@@ -289,6 +318,10 @@ type ClaudeUsageFetcher interface {
 	FetchUsageWithOptions(ctx context.Context, opts *ClaudeUsageFetchOptions) (*ClaudeUsageResponse, error)
 }
 
+type KiroUsageFetcher interface {
+	FetchKiroUsageLimits(ctx context.Context, account *Account) (*kiro.UsageLimitsResponse, error)
+}
+
 // AccountUsageService 账号使用量查询服务
 type AccountUsageService struct {
 	accountRepo             AccountRepository
@@ -299,11 +332,16 @@ type AccountUsageService struct {
 	grokQuotaFetcher        *GrokQuotaFetcher
 	grokQuotaService        *GrokQuotaService
 	openAIQuotaService      *OpenAIQuotaService
+	kiroUsageFetcher        KiroUsageFetcher
 	cache                   *UsageCache
 	identityCache           IdentityCache
 	tlsFPProfileService     *TLSFingerprintProfileService
 	agentIdentityTaskMu     sync.Mutex
 	agentIdentityWS         agentIdentityWSConnectionInvalidator
+}
+
+func (s *AccountUsageService) SetKiroUsageFetcher(fetcher KiroUsageFetcher) {
+	s.kiroUsageFetcher = fetcher
 }
 
 // NewAccountUsageService 创建AccountUsageService实例
@@ -379,6 +417,14 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 	if account.Platform == PlatformAntigravity {
 		usage, err := s.getAntigravityUsage(ctx, account)
 		if err == nil {
+			s.tryClearRecoverableAccountError(ctx, account)
+		}
+		return usage, err
+	}
+
+	if account.Platform == PlatformKiro {
+		usage, err := s.getKiroUsage(ctx, account, forceProbe)
+		if err == nil && usage != nil && usage.Error == "" {
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
 		return usage, err
@@ -638,6 +684,111 @@ func applySyntheticWindowStats(info *UsageInfo, extra map[string]any) {
 		StandardCost: parseExtraFloat64(raw["standard_cost"]),
 		UserCost:     parseExtraFloat64(raw["user_cost"]),
 	}
+}
+
+func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {
+	if account == nil || account.Type != AccountTypeOAuth {
+		return nil, fmt.Errorf("kiro usage requires an OAuth account")
+	}
+	if !force && s.cache != nil {
+		if cached, ok := s.cache.kiroUsageCache.Load(account.ID); ok {
+			if entry, ok := cached.(*kiroUsageCache); ok && entry.usageInfo != nil {
+				ttl := kiroUsageCacheTTL
+				if entry.usageInfo.Error != "" {
+					ttl = kiroUsageErrorCacheTTL
+				}
+				if time.Since(entry.timestamp) < ttl {
+					return entry.usageInfo, nil
+				}
+			}
+		}
+	}
+	if s.kiroUsageFetcher == nil {
+		return nil, errors.New("kiro usage fetcher is not configured")
+	}
+
+	fetch := func() (any, error) {
+		response, err := s.kiroUsageFetcher.FetchKiroUsageLimits(ctx, account)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			usage := buildKiroUsageError(err)
+			if s.cache != nil {
+				s.cache.kiroUsageCache.Store(account.ID, &kiroUsageCache{usageInfo: usage, timestamp: time.Now()})
+			}
+			slog.Warn("kiro_usage_query_failed", "account_id", account.ID, "error", err)
+			return usage, nil
+		}
+
+		summary := kiro.SummarizeUsageLimits(response)
+		now := time.Now().UTC()
+		usage := &UsageInfo{UpdatedAt: &now}
+		if summary != nil {
+			usage.KiroSubscription = &KiroSubscriptionQuota{
+				SubscriptionType:  summary.SubscriptionType,
+				SubscriptionTitle: summary.SubscriptionTitle,
+				ResourceType:      summary.ResourceType,
+				Unit:              summary.Unit,
+				CurrentUsage:      summary.CurrentUsage,
+				UsageLimit:        summary.UsageLimit,
+				Remaining:         summary.Remaining,
+				UsagePercent:      summary.UsagePercent,
+				OverageUsage:      summary.OverageUsage,
+				NextResetAt:       summary.NextResetAt,
+			}
+		}
+		if s.cache != nil {
+			s.cache.kiroUsageCache.Store(account.ID, &kiroUsageCache{usageInfo: usage, timestamp: time.Now()})
+		}
+		return usage, nil
+	}
+
+	if s.cache == nil {
+		value, err := fetch()
+		if err != nil {
+			return nil, err
+		}
+		usage, ok := value.(*UsageInfo)
+		if !ok || usage == nil {
+			return nil, fmt.Errorf("unexpected Kiro usage result type %T", value)
+		}
+		return usage, nil
+	}
+	value, err, _ := s.cache.kiroUsageFlight.Do(fmt.Sprintf("%d", account.ID), fetch)
+	if err != nil {
+		return nil, err
+	}
+	usage, ok := value.(*UsageInfo)
+	if !ok || usage == nil {
+		return nil, fmt.Errorf("unexpected Kiro usage result type %T", value)
+	}
+	return usage, nil
+}
+
+func buildKiroUsageError(err error) *UsageInfo {
+	now := time.Now().UTC()
+	usage := &UsageInfo{
+		UpdatedAt: &now,
+		Error:     "kiro usage query failed",
+		ErrorCode: "network_error",
+	}
+	var upstreamErr *kiro.UsageLimitsHTTPError
+	if !errors.As(err, &upstreamErr) {
+		return usage
+	}
+	switch upstreamErr.StatusCode {
+	case http.StatusUnauthorized:
+		usage.NeedsReauth = true
+		usage.ErrorCode = "unauthenticated"
+	case http.StatusForbidden:
+		usage.IsForbidden = true
+		usage.ForbiddenType = "forbidden"
+		usage.ErrorCode = "forbidden"
+	case http.StatusTooManyRequests:
+		usage.ErrorCode = "rate_limited"
+	}
+	return usage
 }
 
 // buildPassiveUsageWindow 从 Extra 中的被动采样数据（utilization 为 0-1 小数、reset 为 Unix 秒）

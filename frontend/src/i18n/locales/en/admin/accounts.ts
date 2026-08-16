@@ -191,7 +191,7 @@ export default {
         ungrouped: 'Ungrouped',
         hint: 'Displayed as "group / base score / sticky bonus". The base score is computed within the current filtered candidate set and includes priority, load, queue depth, error rate, first-token latency, reset window, quota headroom, billing rate, and related factors. The sticky bonus applies only when sticky weighting is enabled for previous_response_id or session_hash. Higher scores are preferred.'
       },
-      usageWindowsHint: '"5h / 7d" are the upstream account\'s official rolling usage windows (e.g. OpenAI ChatGPT, Claude). They are imposed by the upstream provider on the account itself — not configured by sub2api, and unrelated to the models you map. Usage resets automatically once each window rolls over, and the limit cannot be lifted from within sub2api.',
+      usageWindowsHint: 'Shows official upstream usage windows and balances (for example OpenAI/Claude rolling windows and Kiro monthly credits). These limits are imposed by the upstream provider, not configured by sub2api, and reset according to the provider\'s schedule.',
       ollamaCloud: {
         title: 'Ollama Cloud usage',
         sessionSecurityHint: 'The browser session is encrypted at rest and sent only to the fixed official settings URL.',
@@ -1465,6 +1465,11 @@ export default {
         grokLastStatus: 'Status {status}',
         grokLastProbe: 'Probe {time}',
         grokLastHeadersSeen: 'Headers {time}',
+        kiroCredits: 'Credits',
+        kiroUsed: 'Used',
+        kiroRemaining: 'Remaining',
+        kiroOverage: 'Overage',
+        kiroNoQuota: 'No Kiro credits data',
         passiveSampled: 'Passive',
         activeQuery: 'Query'
       },

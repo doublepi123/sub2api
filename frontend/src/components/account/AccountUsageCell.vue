@@ -532,6 +532,77 @@
       </div>
     </template>
 
+    <!-- Kiro OAuth accounts: official subscription credits from GetUsageLimits -->
+    <template v-else-if="account.platform === 'kiro' && account.type === 'oauth'">
+      <div v-if="kiroPlanLabel" class="mb-1 flex items-center gap-1">
+        <span
+          :class="[
+            'inline-block rounded px-1.5 py-0.5 text-[10px] font-medium',
+            kiroPlanClass
+          ]"
+        >
+          {{ kiroPlanLabel }}
+        </span>
+      </div>
+
+      <div v-if="loading" class="space-y-1.5">
+        <div class="flex items-center gap-1">
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+      </div>
+      <div v-else-if="needsReauth" class="space-y-1">
+        <span class="inline-block rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-medium text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">
+          {{ t('admin.accounts.needsReauth') }}
+        </span>
+      </div>
+      <div v-else-if="isForbidden" class="space-y-1">
+        <span class="inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-900/40 dark:text-red-300">
+          {{ t('admin.accounts.forbidden') }}
+        </span>
+      </div>
+      <div v-else-if="usageInfo?.error" class="text-xs text-amber-600 dark:text-amber-400">
+        {{ usageErrorLabel }}
+      </div>
+      <div v-else-if="kiroQuota" class="space-y-1">
+        <UsageProgressBar
+          :label="t('admin.accounts.usageWindow.kiroCredits')"
+          :utilization="kiroQuota.usage_percent"
+          :resets-at="kiroQuota.next_reset_at || null"
+          color="indigo"
+        />
+        <div class="text-[10px] text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.usageWindow.kiroUsed') }} {{ formatKiroCredits(kiroQuota.current_usage) }} / {{ formatKiroCredits(kiroQuota.usage_limit) }}
+          · {{ t('admin.accounts.usageWindow.kiroRemaining') }} {{ formatKiroCredits(kiroQuota.remaining) }}
+        </div>
+        <div v-if="kiroQuota.overage_usage && kiroQuota.overage_usage > 0" class="text-[10px] text-amber-600 dark:text-amber-400">
+          {{ t('admin.accounts.usageWindow.kiroOverage') }} {{ formatKiroCredits(kiroQuota.overage_usage) }}
+        </div>
+      </div>
+      <div v-else class="text-xs text-gray-400">
+        {{ t('admin.accounts.usageWindow.kiroNoQuota') }}
+      </div>
+
+      <button
+        type="button"
+        class="mt-0.5 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-medium text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
+        :disabled="activeQueryLoading"
+        @click="loadActiveUsage"
+      >
+        <svg
+          class="h-2.5 w-2.5"
+          :class="{ 'animate-spin': activeQueryLoading }"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        {{ t('admin.accounts.usageWindow.activeQuery') }}
+      </button>
+    </template>
+
     <!-- Other accounts: no usage window -->
     <template v-else>
       <div class="text-xs text-gray-400">-</div>
@@ -701,6 +772,9 @@ const shouldFetchUsage = computed(() => {
     return true
   }
   if (props.account.platform === 'antigravity') {
+    return props.account.type === 'oauth'
+  }
+  if (props.account.platform === 'kiro') {
     return props.account.type === 'oauth'
   }
   if (props.account.platform === 'grok') {
@@ -1067,6 +1141,30 @@ const geminiUsageBars = computed(() => {
 
   return bars
 })
+
+const kiroQuota = computed(() => usageInfo.value?.kiro_subscription || null)
+
+const kiroPlanLabel = computed(() => {
+  const quota = kiroQuota.value
+  if (!quota) return null
+  return quota.subscription_title?.trim() || quota.subscription_type?.trim() || null
+})
+
+const kiroPlanClass = computed(() => {
+  const plan = `${kiroQuota.value?.subscription_title || ''} ${kiroQuota.value?.subscription_type || ''}`.toUpperCase()
+  if (plan.includes('POWER')) {
+    return 'bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-300'
+  }
+  if (plan.includes('PRO')) {
+    return 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300'
+  }
+  return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+})
+
+const formatKiroCredits = (value: number) => {
+  if (!Number.isFinite(value)) return '0'
+  return value.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
+}
 
 interface GrokQuotaBarInfo {
   utilization: number

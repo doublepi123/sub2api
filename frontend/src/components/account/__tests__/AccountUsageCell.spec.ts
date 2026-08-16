@@ -190,6 +190,48 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).toContain('25')
   })
 
+  it('Kiro OAuth 会显示官方 Credits 余量和重置时间', async () => {
+    getUsage.mockResolvedValue({
+      kiro_subscription: {
+        subscription_type: 'Q_DEVELOPER_STANDALONE_PRO',
+        subscription_title: 'KIRO PRO',
+        resource_type: 'CREDIT',
+        unit: 'INVOCATIONS',
+        current_usage: 22.97,
+        usage_limit: 1000,
+        remaining: 977.03,
+        usage_percent: 2.297,
+        next_reset_at: '2026-09-01T00:00:00Z'
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 1101,
+          platform: 'kiro',
+          type: 'oauth'
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('KIRO PRO')
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.kiroCredits|2.297|2026-09-01T00:00:00Z')
+    expect(wrapper.text()).toContain('22.97 / 1000')
+    expect(wrapper.text()).toContain('977.03')
+  })
+
 
   it('OpenAI OAuth 快照已过期时首屏会重新请求 usage', async () => {
     getUsage.mockResolvedValue({

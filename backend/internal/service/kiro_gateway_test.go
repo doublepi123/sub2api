@@ -73,6 +73,52 @@ func TestKiroSecretsAreSensitiveCredentials(t *testing.T) {
 	require.True(t, IsSensitiveCredentialKey("client_secret"))
 }
 
+type kiroUsageUpstream struct {
+	request *http.Request
+}
+
+func (u *kiroUsageUpstream) Do(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	return nil, nil
+}
+
+func (u *kiroUsageUpstream) DoWithTLS(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	u.request = req.Clone(req.Context())
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body: io.NopCloser(strings.NewReader(`{
+          "usageBreakdownList":[{
+            "resourceType":"CREDIT",
+            "currentUsageWithPrecision":22.97,
+            "usageLimitWithPrecision":1000.0
+          }],
+          "nextDateReset":1788220800,
+          "subscriptionInfo":{"subscriptionTitle":"KIRO PRO","type":"Q_DEVELOPER_STANDALONE_PRO"}
+        }`)),
+	}, nil
+}
+
+func TestFetchKiroUsageLimitsUsesOfficialReadOnlyEndpoint(t *testing.T) {
+	upstream := &kiroUsageUpstream{}
+	svc := &GatewayService{httpUpstream: upstream}
+	account := &Account{ID: 73, Platform: PlatformKiro, Type: AccountTypeOAuth, Credentials: map[string]any{
+		"access_token": "valid-access",
+		"region":       "us-east-1",
+		"profile_arn":  "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX",
+	}}
+
+	response, err := svc.FetchKiroUsageLimits(context.Background(), account)
+	require.NoError(t, err)
+	require.Len(t, response.UsageBreakdownList, 1)
+	require.NotNil(t, upstream.request)
+	require.Equal(t, http.MethodPost, upstream.request.Method)
+	require.Equal(t, "codewhisperer.us-east-1.amazonaws.com", upstream.request.URL.Host)
+	require.Equal(t, "false", upstream.request.URL.Query().Get("isEmailRequired"))
+	require.Empty(t, upstream.request.URL.Query().Get("profileArn"))
+	require.Equal(t, "AmazonCodeWhispererService.GetUsageLimits", upstream.request.Header.Get("x-amz-target"))
+	require.Equal(t, "Bearer valid-access", upstream.request.Header.Get("Authorization"))
+}
+
 type kiroAccountTestRepo struct {
 	AccountRepository
 	account *Account
