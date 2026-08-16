@@ -33,6 +33,10 @@ type updateServiceGitHubClientStub struct {
 	recentErr      error
 }
 
+func TestUpdateServiceUsesForkReleaseRepository(t *testing.T) {
+	require.Equal(t, "doublepi123/sub2api", githubRepo)
+}
+
 func (s *updateServiceGitHubClientStub) FetchLatestRelease(context.Context, string) (*GitHubRelease, error) {
 	return s.release, nil
 }

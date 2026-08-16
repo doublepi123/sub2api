@@ -22,12 +22,16 @@ on:
 permissions:
   contents: read
 
+env:
+  DOCKER_IMAGE: doublepi/sub2api
+
 concurrency:
   group: dockerhub-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-and-push:
+    if: github.repository == 'doublepi123/sub2api'
     runs-on: ubuntu-latest
     steps:
       - name: Check Docker Hub credentials
@@ -57,7 +61,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/sub2api
+          images: ${{ env.DOCKER_IMAGE }}
           tags: |
             type=raw,value=latest,enable=${{ github.event_name == 'push' }}
             type=raw,value=main,enable=${{ github.event_name == 'push' }}
