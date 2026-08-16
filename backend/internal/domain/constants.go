@@ -72,6 +72,14 @@ const (
 // AntigravityGemini31ProAgentModel is the upstream route for Gemini 3.1 Pro High.
 const AntigravityGemini31ProAgentModel = "gemini-pro-agent"
 
+// Antigravity Gemini Flash bare aliases must resolve to a concrete thinking
+// tier. fetchAvailableModels does not advertise the bare 3.6/3.7 IDs, and the
+// native Antigravity app defaults both families to the medium tier.
+const (
+	AntigravityGemini36FlashDefaultModel = "gemini-3.6-flash-medium"
+	AntigravityGemini37FlashDefaultModel = "gemini-3.7-flash-medium"
+)
+
 // DefaultAntigravityModelMapping 是 Antigravity 平台的默认模型映射
 // 当账号未配置 model_mapping 时使用此默认值
 // 与前端 useModelWhitelist.ts 中的 antigravityDefaultMappings 保持一致
@@ -118,11 +126,17 @@ var DefaultAntigravityModelMapping = map[string]string{
 	// Gemini 3.1 image preview 映射
 	"gemini-3.1-flash-image-preview": "gemini-3.1-flash-image",
 	// Gemini 3.6 Flash tiered models
-	"gemini-3.6-flash":        "gemini-3.6-flash",
+	"gemini-3.6-flash":        AntigravityGemini36FlashDefaultModel,
 	"gemini-3.6-flash-high":   "gemini-3.6-flash-high",
 	"gemini-3.6-flash-low":    "gemini-3.6-flash-low",
 	"gemini-3.6-flash-medium": "gemini-3.6-flash-medium",
 	"gemini-3.6-flash-tiered": "gemini-3.6-flash-tiered",
+	// Gemini 3.7 Flash tiered models
+	"gemini-3.7-flash":        AntigravityGemini37FlashDefaultModel,
+	"gemini-3.7-flash-high":   "gemini-3.7-flash-high",
+	"gemini-3.7-flash-low":    "gemini-3.7-flash-low",
+	"gemini-3.7-flash-medium": "gemini-3.7-flash-medium",
+	"gemini-3.7-flash-tiered": "gemini-3.7-flash-tiered",
 	// Gemini 3 image 兼容映射（向 3.1 image 迁移）
 	"gemini-3-pro-image":         "gemini-3.1-flash-image",
 	"gemini-3-pro-image-preview": "gemini-3.1-flash-image",
