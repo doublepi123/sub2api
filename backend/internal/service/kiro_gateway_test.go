@@ -124,7 +124,9 @@ func TestAccountTestServiceRoutesKiroThroughKiroGateway(t *testing.T) {
 	require.Equal(t, "claude-sonnet-4.5", payload["model"])
 	messages, ok := payload["messages"].([]any)
 	require.True(t, ok)
-	require.Equal(t, "say test ok", messages[0].(map[string]any)["content"])
+	message, ok := messages[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "say test ok", message["content"])
 	require.Contains(t, recorder.Body.String(), "KIRO_TEST_OK")
 	require.Contains(t, recorder.Body.String(), `"success":true`)
 }
