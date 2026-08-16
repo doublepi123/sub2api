@@ -459,39 +459,32 @@ func (s *streamState) consume(w io.Writer, payload []byte) error {
 		_, _ = s.outputText.WriteString(content)
 		return writeSSE(w, "content_block_delta", map[string]any{"type": "content_block_delta", "index": s.active, "delta": map[string]any{"type": "text_delta", "text": content}})
 	}
+	toolEvent := false
 	if name, ok := obj["name"].(string); ok {
-		if err := s.closeBlock(w); err != nil {
-			return err
-		}
 		id, _ := obj["toolUseId"].(string)
 		if id == "" {
 			id = "toolu_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		}
-		input := json.RawMessage(`{}`)
-		if value, exists := obj["input"]; exists {
-			if encoded, err := json.Marshal(value); err == nil && string(encoded) != `""` {
-				input = encoded
+		currentMatches := s.hasActive && s.blocks[s.active].Type == "tool_use" && s.blocks[s.active].ID == id
+		if !currentMatches {
+			if err := s.closeBlock(w); err != nil {
+				return err
+			}
+			s.blocks = append(s.blocks, apicompat.AnthropicContentBlock{Type: "tool_use", ID: id, Name: name, Input: json.RawMessage(`{}`)})
+			s.active = len(s.blocks) - 1
+			s.hasActive = true
+			s.hasTool = true
+			if err := writeSSE(w, "content_block_start", map[string]any{"type": "content_block_start", "index": s.active, "content_block": map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}}}); err != nil {
+				return err
 			}
 		}
-		s.blocks = append(s.blocks, apicompat.AnthropicContentBlock{Type: "tool_use", ID: id, Name: name, Input: input})
-		s.active = len(s.blocks) - 1
-		s.hasActive = true
-		s.hasTool = true
-		return writeSSE(w, "content_block_start", map[string]any{"type": "content_block_start", "index": s.active, "content_block": map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}}})
+		toolEvent = true
 	}
 	if input, exists := obj["input"]; exists && s.hasActive && s.blocks[s.active].Type == "tool_use" {
-		fragment := ""
-		switch value := input.(type) {
-		case string:
-			fragment = value
-		default:
-			encoded, _ := json.Marshal(value)
-			fragment = string(encoded)
+		if err := s.consumeToolInput(w, input); err != nil {
+			return err
 		}
-		if fragment != "" {
-			s.blocks[s.active].Input = appendJSONFragment(s.blocks[s.active].Input, fragment)
-			return writeSSE(w, "content_block_delta", map[string]any{"type": "content_block_delta", "index": s.active, "delta": map[string]any{"type": "input_json_delta", "partial_json": fragment}})
-		}
+		toolEvent = true
 	}
 	if stop, ok := obj["stop"].(bool); ok && stop {
 		return s.closeBlock(w)
@@ -499,7 +492,29 @@ func (s *streamState) consume(w io.Writer, payload []byte) error {
 	if reason, ok := obj["stopReason"].(string); ok {
 		s.stopReason = mapStopReason(reason, s.hasTool)
 	}
+	if toolEvent {
+		return nil
+	}
 	return nil
+}
+
+func (s *streamState) consumeToolInput(w io.Writer, input any) error {
+	fragment := ""
+	switch value := input.(type) {
+	case string:
+		fragment = value
+	default:
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		fragment = string(encoded)
+	}
+	if fragment == "" || fragment == "{}" || fragment == `""` {
+		return nil
+	}
+	s.blocks[s.active].Input = appendJSONFragment(s.blocks[s.active].Input, fragment)
+	return writeSSE(w, "content_block_delta", map[string]any{"type": "content_block_delta", "index": s.active, "delta": map[string]any{"type": "input_json_delta", "partial_json": fragment}})
 }
 
 func (s *streamState) startText(w io.Writer) error {

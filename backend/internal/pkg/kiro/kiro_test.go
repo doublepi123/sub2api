@@ -53,8 +53,9 @@ func TestTransformResponseTextAndToolEvents(t *testing.T) {
 	events := [][]byte{
 		[]byte(`{"content":"hello","modelId":"claude-haiku-4.5"}`),
 		[]byte(`{"name":"lookup","toolUseId":"tool_1","input":{}}`),
-		[]byte(`{"input":"{\"q\":\"x\"}"}`),
-		[]byte(`{"stop":true}`),
+		[]byte(`{"name":"lookup","toolUseId":"tool_1","input":"{\"q\":"}`),
+		[]byte(`{"name":"lookup","toolUseId":"tool_1","input":"\"x\"}"}`),
+		[]byte(`{"name":"lookup","toolUseId":"tool_1","input":{},"stop":true}`),
 		[]byte(`{"stopReason":"END_TURN"}`),
 	}
 	var source bytes.Buffer
@@ -69,7 +70,9 @@ func TestTransformResponseTextAndToolEvents(t *testing.T) {
 	require.Contains(t, stream, `"type":"message_start"`)
 	require.Contains(t, stream, `"text":"hello","type":"text_delta"`)
 	require.Contains(t, stream, `"id":"tool_1","input":{},"name":"lookup","type":"tool_use"`)
-	require.Contains(t, stream, `"partial_json":"{\"q\":\"x\"}","type":"input_json_delta"`)
+	require.Contains(t, stream, `"partial_json":"{\"q\":"`)
+	require.Contains(t, stream, `"partial_json":"\"x\"}"`)
+	require.Equal(t, 1, bytes.Count(out.Bytes(), []byte(`"type":"tool_use"`)))
 	require.Contains(t, stream, `"stop_reason":"tool_use"`)
 	require.Contains(t, stream, `event: message_stop`)
 }
