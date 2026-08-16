@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v[0-9]*'
     paths:
       - '.github/workflows/dockerhub-build.yml'
       - 'Dockerfile'
@@ -45,6 +47,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Resolve application version
+        id: version
+        run: echo "version=$(backend/scripts/resolve-version.sh)" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -62,9 +68,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.DOCKER_IMAGE }}
+          flavor: |
+            latest=false
           tags: |
-            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
-            type=raw,value=main,enable=${{ github.event_name == 'push' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}},value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=sha,prefix=sha-
 
@@ -78,5 +87,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             GOLANG_IMAGE=golang:1.26.6-alpine
+            VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
