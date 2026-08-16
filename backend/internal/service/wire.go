@@ -230,6 +230,7 @@ func ProvideAccountTestService(
 	cfg *config.Config,
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAIGatewayService *OpenAIGatewayService,
+	gatewayService *GatewayService,
 	settingService *SettingService,
 ) *AccountTestService {
 	service := NewAccountTestService(
@@ -243,6 +244,7 @@ func ProvideAccountTestService(
 		tlsFPProfileService,
 	)
 	service.agentIdentityWS = openAIGatewayService
+	service.SetKiroGatewayService(gatewayService)
 	service.SetSettingService(settingService)
 	return service
 }

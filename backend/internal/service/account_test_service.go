@@ -71,6 +71,10 @@ type AccountTestOptions struct {
 	AudioDataURL string
 }
 
+type kiroAccountTestGateway interface {
+	forwardKiroAnthropicResponse(ctx context.Context, account *Account, anthropicBody []byte, mappedModel string, stream bool) (*http.Response, error)
+}
+
 func firstAccountTestOptions(opts []AccountTestOptions) AccountTestOptions {
 	if len(opts) == 0 {
 		return AccountTestOptions{}
@@ -146,6 +150,7 @@ type AccountTestService struct {
 	cfg                       *config.Config
 	settingService            *SettingService
 	tlsFPProfileService       *TLSFingerprintProfileService
+	kiroGateway               kiroAccountTestGateway
 	agentIdentityTaskMu       sync.Mutex
 	agentIdentityWS           agentIdentityWSConnectionInvalidator
 	// grokWSDialer is optional; realtime account tests use the default OpenAI-style
@@ -156,6 +161,12 @@ type AccountTestService struct {
 func (s *AccountTestService) SetSettingService(settingService *SettingService) {
 	if s != nil {
 		s.settingService = settingService
+	}
+}
+
+func (s *AccountTestService) SetKiroGatewayService(gateway *GatewayService) {
+	if s != nil {
+		s.kiroGateway = gateway
 	}
 }
 
@@ -301,7 +312,56 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.routeAntigravityTest(c, account, modelID, prompt)
 	}
 
+	if account.Platform == PlatformKiro {
+		return s.testKiroAccountConnection(c, account, modelID, prompt)
+	}
+
 	return s.testClaudeAccountConnection(c, account, modelID)
+}
+
+func (s *AccountTestService) testKiroAccountConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
+	if s.kiroGateway == nil {
+		return s.sendErrorAndEnd(c, "Kiro gateway service not configured")
+	}
+
+	testModelID := strings.TrimSpace(modelID)
+	if testModelID == "" {
+		testModelID = "claude-haiku-4.5"
+	}
+	mappedModel := account.GetMappedModel(testModelID)
+	testPrompt := strings.TrimSpace(prompt)
+	if testPrompt == "" {
+		testPrompt = "hi"
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	payload, err := json.Marshal(map[string]any{
+		"model":      mappedModel,
+		"messages":   []map[string]any{{"role": "user", "content": testPrompt}},
+		"max_tokens": 128,
+		"stream":     true,
+	})
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create Kiro test payload")
+	}
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+	resp, err := s.kiroGateway.forwardKiroAnthropicResponse(c.Request.Context(), account, payload, mappedModel, true)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Kiro request failed: %s", err.Error()))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= http.StatusBadRequest {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Kiro API returned %d: %s", resp.StatusCode, string(body)))
+	}
+
+	return s.processClaudeStream(c, resp.Body)
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection
