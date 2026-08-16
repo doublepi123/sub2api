@@ -50,3 +50,16 @@ func TestMigration223TracksConfiguredTimezone(t *testing.T) {
 	require.Contains(t, sql, "CREATE OR REPLACE FUNCTION invalidate_group_usage_rollup_state")
 	require.Contains(t, sql, "CREATE OR REPLACE FUNCTION invalidate_group_usage_rollup_state_after_insert")
 }
+
+func TestMigration224UsesPublishedRollupTimezone(t *testing.T) {
+	content, err := FS.ReadFile("224_group_usage_rollup_trigger_timezone.sql")
+	require.NoError(t, err)
+
+	sql := string(content)
+	require.Contains(t, sql, "SELECT closed_before, timezone_name")
+	require.Contains(t, sql, "INTO published_before, configured_timezone")
+	require.Contains(t, sql, "AT TIME ZONE configured_timezone")
+	require.NotContains(t, sql, "current_setting('TimeZone')")
+	require.Contains(t, sql, "FOR UPDATE")
+	require.Contains(t, sql, "FOR KEY SHARE")
+}
