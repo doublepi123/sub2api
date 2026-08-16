@@ -134,6 +134,7 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
 
 		// Antigravity — uses inbound to pick Claude vs Gemini upstream.
 		{"antigravity claude", EndpointMessages, "/antigravity/v1/messages", service.PlatformAntigravity, EndpointMessages},
+		{"kiro messages", EndpointMessages, "/v1/messages", service.PlatformKiro, EndpointMessages},
 		{"antigravity gemini", EndpointGeminiModels, "/antigravity/v1beta/models", service.PlatformAntigravity, EndpointGeminiModels},
 
 		// Unknown platform — passthrough.

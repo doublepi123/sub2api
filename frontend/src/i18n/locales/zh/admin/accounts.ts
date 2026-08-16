@@ -306,6 +306,7 @@ export default {
         anthropic: 'Anthropic',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        kiro: 'Kiro',
         grok: 'Grok',
       },
       types: {
@@ -324,6 +325,17 @@ export default {
       antigravityProjectIdPlaceholder: 'your-gcp-project-id',
       antigravityProjectIdHint:
         'standard-tier 且未自动返回 project_id 的 Antigravity 账号需要填写用户自带 GCP project。',
+      kiro: {
+        accessToken: 'Access Token（可选）',
+        refreshToken: 'Refresh Token',
+        clientId: 'OIDC Client ID',
+        clientSecret: 'OIDC Client Secret',
+        region: 'AWS 区域',
+        profileArn: 'CodeWhisperer Profile ARN',
+        builderIdHint: '填写 Kiro CLI 注册的 Builder ID 凭据。Access Token 可以留空，服务端会自动刷新。',
+        credentialsRequired: 'Refresh Token、Client ID 和 Client Secret 均为必填项',
+        editSecretsHint: '敏感字段不会回显；留空表示保留当前值。'
+      },
       accountSchedulingThresholdOverride: '账号自动停调阈值覆盖',
       accountSchedulingThresholdOverrideHint:
         '仅对当前账号覆盖平台级自动停调阈值；关闭后使用平台设置。',

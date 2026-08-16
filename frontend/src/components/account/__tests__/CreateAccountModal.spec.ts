@@ -338,4 +338,29 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
   })
+
+  it('creates a Kiro Builder ID account with refresh credentials', async () => {
+    createAccountMock.mockResolvedValueOnce({ id: 77, platform: 'kiro', type: 'oauth' })
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kiro')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro Builder ID')
+    await wrapper.get('[data-testid="kiro-refresh-token"]').setValue('refresh-value')
+    await wrapper.get('[data-testid="kiro-client-id"]').setValue('client-value')
+    await wrapper.get('[data-testid="kiro-client-secret"]').setValue('secret-value')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({
+      name: 'Kiro Builder ID',
+      platform: 'kiro',
+      type: 'oauth',
+      credentials: {
+        refresh_token: 'refresh-value',
+        client_id: 'client-value',
+        client_secret: 'secret-value',
+        region: 'us-east-1'
+      }
+    })
+  })
 })

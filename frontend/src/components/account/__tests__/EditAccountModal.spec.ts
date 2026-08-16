@@ -267,6 +267,35 @@ function buildGrokOAuthAccount() {
   } as any
 }
 
+function buildKiroAccount() {
+  return {
+    id: 6,
+    name: 'Kiro Builder ID',
+    notes: '',
+    platform: 'kiro',
+    type: 'oauth',
+    credentials: {
+      region: 'us-east-1',
+      profile_arn: 'arn:aws:codewhisperer:us-east-1:123:profile/test'
+    },
+    credentials_status: {
+      has_access_token: true,
+      has_refresh_token: true,
+      has_client_id: true,
+      has_client_secret: true
+    },
+    extra: {},
+    proxy_id: null,
+    concurrency: 1,
+    priority: 1,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
 function buildGrokAPIKeyAccount() {
   return {
     ...buildAccount(),
@@ -1177,5 +1206,29 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty(
       'antigravity_project_id'
     )
+  })
+
+  it('does not re-expose Kiro secrets and preserves them when fields stay empty', async () => {
+    const account = buildKiroAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+
+    expect(wrapper.get<HTMLInputElement>('[data-testid="edit-kiro-access-token"]').element.value).toBe('')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="edit-kiro-refresh-token"]').element.value).toBe('')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="edit-kiro-client-id"]').element.value).toBe('')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="edit-kiro-client-secret"]').element.value).toBe('')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials).toMatchObject({
+      region: 'us-east-1',
+      profile_arn: 'arn:aws:codewhisperer:us-east-1:123:profile/test'
+    })
+    expect(credentials).not.toHaveProperty('access_token')
+    expect(credentials).not.toHaveProperty('refresh_token')
+    expect(credentials).not.toHaveProperty('client_id')
+    expect(credentials).not.toHaveProperty('client_secret')
   })
 })

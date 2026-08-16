@@ -4726,6 +4726,7 @@ const platformOptions = computed(() => [
   { value: "openai", label: "OpenAI" },
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
+  { value: "kiro", label: "Kiro" },
   { value: "grok", label: "Grok" },
   { value: "composite", label: "Composite" },
 ]);
@@ -4736,6 +4737,7 @@ const platformFilterOptions = computed(() => [
   { value: "openai", label: "OpenAI" },
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
+  { value: "kiro", label: "Kiro" },
   { value: "grok", label: "Grok" },
   { value: "composite", label: "Composite" },
 ]);
@@ -4745,6 +4747,7 @@ const compositeRoutePlatformOptions = computed(() => [
   { value: "openai", label: "OpenAI" },
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
+  { value: "kiro", label: "Kiro" },
   { value: "grok", label: "Grok" },
 ]);
 

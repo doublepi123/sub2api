@@ -103,6 +103,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        kiro: 'Kiro',
         grok: 'Grok',
       },
       types: {
@@ -121,6 +122,17 @@ export default {
       antigravityProjectIdPlaceholder: 'your-gcp-project-id',
       antigravityProjectIdHint:
         'Antigravity standard-tier accounts that do not receive an automatic project_id need a user-owned GCP project.',
+      kiro: {
+        accessToken: 'Access token (optional)',
+        refreshToken: 'Refresh token',
+        clientId: 'OIDC client ID',
+        clientSecret: 'OIDC client secret',
+        region: 'AWS region',
+        profileArn: 'CodeWhisperer profile ARN',
+        builderIdHint: 'Use the Builder ID credentials registered by Kiro CLI. The access token may be omitted and will be refreshed automatically.',
+        credentialsRequired: 'Refresh token, client ID, and client secret are required',
+        editSecretsHint: 'Secret values are hidden. Leave a secret field empty to retain its current value.'
+      },
       accountSchedulingThresholdOverride: 'Account Auto-Pause Threshold Override',
       accountSchedulingThresholdOverrideHint:
         'Override the platform auto-pause threshold for this account only. Disable to use platform settings.',

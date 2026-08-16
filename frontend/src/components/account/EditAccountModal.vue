@@ -26,6 +26,68 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+      <div v-if="account.platform === 'kiro'" class="space-y-4">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.accessToken') }}</label>
+            <input
+              v-model="editKiroAccessToken"
+              data-testid="edit-kiro-access-token"
+              type="password"
+              class="input font-mono"
+              autocomplete="new-password"
+              data-1p-ignore
+              :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+            />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.refreshToken') }}</label>
+            <input
+              v-model="editKiroRefreshToken"
+              data-testid="edit-kiro-refresh-token"
+              type="password"
+              class="input font-mono"
+              autocomplete="new-password"
+              data-1p-ignore
+              :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+            />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.clientId') }}</label>
+            <input
+              v-model="editKiroClientId"
+              data-testid="edit-kiro-client-id"
+              type="password"
+              class="input font-mono"
+              autocomplete="new-password"
+              data-1p-ignore
+              :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+            />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.clientSecret') }}</label>
+            <input
+              v-model="editKiroClientSecret"
+              data-testid="edit-kiro-client-secret"
+              type="password"
+              class="input font-mono"
+              autocomplete="new-password"
+              data-1p-ignore
+              :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+            />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.region') }}</label>
+            <input v-model="editKiroRegion" data-testid="edit-kiro-region" type="text" required class="input font-mono" />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.profileArn') }}</label>
+            <input v-model="editKiroProfileArn" data-testid="edit-kiro-profile-arn" type="text" required class="input font-mono" />
+          </div>
+        </div>
+        <p class="input-hint">{{ t('admin.accounts.kiro.editSecretsHint') }}</p>
+      </div>
+
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
         <div>
@@ -2829,6 +2891,12 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const editKiroAccessToken = ref('')
+const editKiroRefreshToken = ref('')
+const editKiroClientId = ref('')
+const editKiroClientSecret = ref('')
+const editKiroRegion = ref('us-east-1')
+const editKiroProfileArn = ref('arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX')
 // Bedrock credentials
 const editBedrockAccessKeyId = ref('')
 const editBedrockSecretAccessKey = ref('')
@@ -3401,6 +3469,14 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
+  editKiroAccessToken.value = ''
+  editKiroRefreshToken.value = ''
+  editKiroClientId.value = ''
+  editKiroClientSecret.value = ''
+  editKiroRegion.value = typeof credentials?.region === 'string' ? credentials.region : 'us-east-1'
+  editKiroProfileArn.value = typeof credentials?.profile_arn === 'string'
+    ? credentials.profile_arn
+    : 'arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX'
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
   autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
   editVertexProjectId.value = ''
@@ -4284,6 +4360,20 @@ const handleSubmit = async () => {
       if (upstreamBillingRateSyncEnabled.value) {
         delete updatePayload.rate_multiplier
       }
+    }
+
+    if (props.account.platform === 'kiro') {
+      const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
+      const newCredentials: Record<string, unknown> = {
+        ...currentCredentials,
+        region: editKiroRegion.value.trim() || 'us-east-1',
+        profile_arn: editKiroProfileArn.value.trim()
+      }
+      if (editKiroAccessToken.value.trim()) newCredentials.access_token = editKiroAccessToken.value.trim()
+      if (editKiroRefreshToken.value.trim()) newCredentials.refresh_token = editKiroRefreshToken.value.trim()
+      if (editKiroClientId.value.trim()) newCredentials.client_id = editKiroClientId.value.trim()
+      if (editKiroClientSecret.value.trim()) newCredentials.client_secret = editKiroClientSecret.value.trim()
+      updatePayload.credentials = newCredentials
     }
 
     // For apikey type, handle credentials update

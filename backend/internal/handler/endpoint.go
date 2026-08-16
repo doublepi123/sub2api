@@ -205,7 +205,7 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 		}
 		return EndpointResponses
 
-	case service.PlatformAnthropic:
+	case service.PlatformAnthropic, service.PlatformKiro:
 		return EndpointMessages
 
 	case service.PlatformGemini:

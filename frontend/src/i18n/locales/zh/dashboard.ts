@@ -435,6 +435,7 @@ export default {
       openai: 'OpenAI',
       anthropic: 'Anthropic',
       gemini: 'Gemini',
+      kiro: 'Kiro',
       grok: 'Grok'
     },
     extraModelsHeader: '附加模型',

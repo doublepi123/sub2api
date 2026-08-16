@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 
@@ -21,6 +22,15 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	if parsed == nil {
 		s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return fmt.Errorf("parse request: empty request")
+	}
+	if account != nil && account.Platform == PlatformKiro {
+		_, inputTokens, err := kiro.BuildRequest(parsed.Body.Bytes(), account.GetMappedModel(parsed.Model), account.GetCredential("profile_arn"))
+		if err != nil {
+			s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+			return err
+		}
+		c.JSON(http.StatusOK, gin.H{"input_tokens": inputTokens})
+		return nil
 	}
 
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
