@@ -168,8 +168,19 @@ func TestUserHandlerBindAuthIdentityMapsRequest(t *testing.T) {
 func TestGroupHandlerEndpoints(t *testing.T) {
 	router, _ := setupAdminRouter()
 
+	body, _ := json.Marshal(map[string]any{
+		"name":            "Kiro",
+		"platform":        "kiro",
+		"rate_multiplier": 1,
+	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/groups", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/groups", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/groups", nil)
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -195,7 +206,7 @@ func TestGroupHandlerEndpoints(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), "openrouter/gpt-5")
 
-	body, _ := json.Marshal(map[string]any{
+	body, _ = json.Marshal(map[string]any{
 		"public_model":    "openrouter/gpt-5",
 		"match_type":      "exact",
 		"target_platform": "openai",
@@ -209,6 +220,20 @@ func TestGroupHandlerEndpoints(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusCreated, rec.Code)
 	require.Contains(t, rec.Body.String(), "gpt-5")
+
+	body, _ = json.Marshal(map[string]any{
+		"public_model":    "kiro/claude-haiku-4.5",
+		"match_type":      "exact",
+		"target_platform": "kiro",
+		"upstream_model":  "claude-haiku-4.5",
+		"endpoint":        "messages",
+		"enabled":         true,
+	})
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/groups/2/composite-routes", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code)
 
 	body, _ = json.Marshal(map[string]any{
 		"public_model":    "openrouter/gpt-5",
