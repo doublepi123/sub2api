@@ -47,49 +47,42 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Resolve application version
-        id: version
-        run: echo "version=$(backend/scripts/resolve-version.sh)" >> "$GITHUB_OUTPUT"
-
-      # setup-buildx pulls the BuildKit image from Docker Hub. Authenticate
-      # first so runner-wide anonymous pull limits do not fail setup before the
-      # later build/push step gets a chance to use these credentials.
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Set up QEMU
         run: docker run --privileged --rm tonistiigi/binfmt --install arm64
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE }}
-          flavor: |
-            latest=false
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}},value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=sha,prefix=sha-
+        run: |
+          docker buildx create --name sub2api-builder --driver docker-container --use
+          docker buildx inspect --bootstrap
 
       - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            GOLANG_IMAGE=golang:1.26.6-alpine
-            VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tags=(--tag "$DOCKER_IMAGE:sha-${GITHUB_SHA::7}")
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            tags+=(--tag "$DOCKER_IMAGE:main" --tag "$DOCKER_IMAGE:latest")
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tags+=(--tag "$DOCKER_IMAGE:${GITHUB_REF_NAME#v}")
+          fi
+          if [[ -n "$INPUT_TAG" ]]; then
+            tags+=(--tag "$DOCKER_IMAGE:$INPUT_TAG")
+          fi
+
+          version="$(backend/scripts/resolve-version.sh)"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            "${tags[@]}" \
+            --build-arg GOLANG_IMAGE=golang:1.26.6-alpine \
+            --build-arg "VERSION=$version" \
+            --cache-from "type=registry,ref=$DOCKER_IMAGE:buildcache" \
+            --cache-to "type=registry,ref=$DOCKER_IMAGE:buildcache,mode=max" \
+            .
