@@ -22,6 +22,22 @@ type antigravityStreamResult struct {
 	clientDisconnect bool // 客户端是否在流式传输过程中断开
 }
 
+const antigravityMalformedFunctionCallReason GatewayFailureReason = "antigravity_malformed_function_call"
+
+func isAntigravityMalformedFunctionCall(response map[string]any) bool {
+	return strings.EqualFold(strings.TrimSpace(extractGeminiFinishReason(response)), "MALFORMED_FUNCTION_CALL")
+}
+
+func newAntigravityMalformedFunctionCallFailoverError() *UpstreamFailoverError {
+	return &UpstreamFailoverError{
+		StatusCode:             http.StatusBadGateway,
+		ResponseBody:           []byte(`{"error":{"type":"upstream_error","code":"malformed_function_call","message":"Gemini generated a malformed function call"}}`),
+		RetryableOnSameAccount: true,
+		RequestScopedTransient: true,
+		Reason:                 antigravityMalformedFunctionCallReason,
+	}
+}
+
 func (s *AntigravityGatewayService) observeAntigravityGeminiSSELine(c *gin.Context, line string) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
@@ -48,6 +64,7 @@ type antigravityClientWriter struct {
 	w                gin.ResponseWriter
 	flusher          http.Flusher
 	disconnected     bool
+	wrote            bool
 	prefix           string // 日志前缀，标识来源方法
 	beforeFirstWrite func()
 }
@@ -66,6 +83,7 @@ func (cw *antigravityClientWriter) Write(p []byte) bool {
 		cw.markDisconnected()
 		return false
 	}
+	cw.wrote = true
 	cw.flusher.Flush()
 	return true
 }
@@ -80,11 +98,13 @@ func (cw *antigravityClientWriter) Fprintf(format string, args ...any) bool {
 		cw.markDisconnected()
 		return false
 	}
+	cw.wrote = true
 	cw.flusher.Flush()
 	return true
 }
 
 func (cw *antigravityClientWriter) Disconnected() bool { return cw.disconnected }
+func (cw *antigravityClientWriter) Wrote() bool        { return cw.wrote }
 
 func (cw *antigravityClientWriter) prepareFirstWrite() {
 	if cw.beforeFirstWrite == nil {
@@ -263,20 +283,13 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 					usage = u
 				}
 				var parsed map[string]any
-				if json.Unmarshal(inner, &parsed) == nil {
-					// Check for MALFORMED_FUNCTION_CALL
-					if candidates, ok := parsed["candidates"].([]any); ok && len(candidates) > 0 {
-						if cand, ok := candidates[0].(map[string]any); ok {
-							if fr, ok := cand["finishReason"].(string); ok && fr == "MALFORMED_FUNCTION_CALL" {
-								logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in forward stream")
-								if content, ok := cand["content"]; ok {
-									if b, err := json.Marshal(content); err == nil {
-										logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Malformed content: %s", string(b))
-									}
-								}
-							}
-						}
+				if json.Unmarshal(inner, &parsed) == nil && isAntigravityMalformedFunctionCall(parsed) {
+					logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in forward stream")
+					if !cw.Wrote() && !cw.Disconnected() {
+						return nil, newAntigravityMalformedFunctionCallFailoverError()
 					}
+					sendErrorEvent("malformed_function_call")
+					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}, antigravity.ErrMalformedFunctionCall
 				}
 
 				if firstTokenMs == nil {
@@ -440,18 +453,9 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 				usage = u
 			}
 
-			// Check for MALFORMED_FUNCTION_CALL
-			if candidates, ok := parsed["candidates"].([]any); ok && len(candidates) > 0 {
-				if cand, ok := candidates[0].(map[string]any); ok {
-					if fr, ok := cand["finishReason"].(string); ok && fr == "MALFORMED_FUNCTION_CALL" {
-						logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in forward non-stream collect")
-						if content, ok := cand["content"]; ok {
-							if b, err := json.Marshal(content); err == nil {
-								logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Malformed content: %s", string(b))
-							}
-						}
-					}
-				}
+			if isAntigravityMalformedFunctionCall(parsed) {
+				logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in forward non-stream collect, triggering retry")
+				return nil, newAntigravityMalformedFunctionCallFailoverError()
 			}
 
 			// 保留最后一个有 parts 的响应
@@ -897,6 +901,10 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 			if err := json.Unmarshal(inner, &parsed); err != nil {
 				continue
 			}
+			if isAntigravityMalformedFunctionCall(parsed) {
+				logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in claude non-stream collect, triggering retry")
+				return nil, nil, newAntigravityMalformedFunctionCallFailoverError()
+			}
 
 			last = parsed
 
@@ -1156,6 +1164,14 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 
 			// 处理 SSE 行，转换为 Claude 格式
 			claudeEvents := processor.ProcessLine(strings.TrimRight(ev.line, "\r\n"))
+			if processor.MalformedFunctionCall() {
+				logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in claude stream")
+				if !cw.Wrote() && !cw.Disconnected() {
+					return nil, newAntigravityMalformedFunctionCallFailoverError()
+				}
+				sendErrorEvent("malformed_function_call")
+				return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}, antigravity.ErrMalformedFunctionCall
+			}
 			if len(claudeEvents) > 0 {
 				if firstTokenMs == nil {
 					ms := int(time.Since(startTime).Milliseconds())

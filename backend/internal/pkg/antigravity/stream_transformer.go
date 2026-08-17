@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 )
 
@@ -34,6 +33,7 @@ type StreamingProcessor struct {
 	webSearchQueries  []string
 	groundingChunks   []GeminiGroundingChunk
 	usageMapHook      UsageMapHook
+	malformedCall     bool
 
 	// 累计 usage
 	inputTokens       int
@@ -98,6 +98,11 @@ func (p *StreamingProcessor) ProcessLine(line string) []byte {
 	}
 
 	geminiResp := &v1Resp.Response
+	if HasMalformedFunctionCall(geminiResp) {
+		p.malformedCall = true
+		logMalformedFunctionCall(geminiResp, p.originalModel, "stream")
+		return nil
+	}
 
 	var result bytes.Buffer
 
@@ -131,14 +136,6 @@ func (p *StreamingProcessor) ProcessLine(line string) []byte {
 	// 检查是否结束
 	if len(geminiResp.Candidates) > 0 {
 		finishReason := geminiResp.Candidates[0].FinishReason
-		if finishReason == "MALFORMED_FUNCTION_CALL" {
-			log.Printf("[Antigravity] MALFORMED_FUNCTION_CALL detected in stream for model %s", p.originalModel)
-			if geminiResp.Candidates[0].Content != nil {
-				if b, err := json.Marshal(geminiResp.Candidates[0].Content); err == nil {
-					log.Printf("[Antigravity] Malformed content: %s", string(b))
-				}
-			}
-		}
 		if finishReason != "" {
 			_, _ = result.Write(p.emitFinish(finishReason))
 		}
@@ -158,7 +155,7 @@ func (p *StreamingProcessor) Finish() ([]byte, *ClaudeUsage) {
 		ImageOutputTokens:    p.imageOutputTokens,
 	}
 
-	if !p.messageStartSent {
+	if !p.messageStartSent || p.malformedCall {
 		return nil, usage
 	}
 
@@ -173,6 +170,13 @@ func (p *StreamingProcessor) Finish() ([]byte, *ClaudeUsage) {
 // MessageStartSent 报告流中是否已发出过 message_start 事件（即是否收到过有效的上游数据）
 func (p *StreamingProcessor) MessageStartSent() bool {
 	return p.messageStartSent
+}
+
+// MalformedFunctionCall reports whether the upstream terminated this stream
+// with MALFORMED_FUNCTION_CALL. The service layer uses it to retry before any
+// buffered compatibility events are committed to the client.
+func (p *StreamingProcessor) MalformedFunctionCall() bool {
+	return p.malformedCall
 }
 
 // emitMessageStart 发送 message_start 事件

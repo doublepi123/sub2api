@@ -418,6 +418,126 @@ func TestAntigravityCompatUsageOnlyStreamTriggersFailover(t *testing.T) {
 	}
 }
 
+func TestAntigravityCompatMalformedFunctionCallTriggersRetryBeforeWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		run  func(*AntigravityGatewayService, *gin.Context, *http.Response) (*antigravityStreamResult, error)
+	}{
+		{
+			name: "chat completions",
+			run: func(svc *AntigravityGatewayService, c *gin.Context, resp *http.Response) (*antigravityStreamResult, error) {
+				return svc.handleChatCompletionsStreamingFromAntigravity(c, resp, time.Now(), "gemini-3.7-flash", true)
+			},
+		},
+		{
+			name: "responses",
+			run: func(svc *AntigravityGatewayService, c *gin.Context, resp *http.Response) (*antigravityStreamResult, error) {
+				return svc.handleResponsesStreamingFromAntigravity(c, resp, time.Now(), "gemini-3.7-flash")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, nil)
+			c, recorder := newAntigravityCompatContext(http.MethodPost, "/", nil)
+			body := `data: {"response":{"responseId":"resp_malformed","candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"sig-empty"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":1}}}` + "\n\n"
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}
+
+			result, err := tt.run(svc, c, resp)
+
+			require.Nil(t, result)
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.True(t, failoverErr.RetryableOnSameAccount)
+			require.True(t, failoverErr.RequestScopedTransient)
+			require.Equal(t, antigravityMalformedFunctionCallReason, failoverErr.Reason)
+			require.Empty(t, recorder.Body.String())
+		})
+	}
+}
+
+func TestAntigravityCompatMalformedFunctionCallNonStreamingTriggersRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		path string
+		body []byte
+		call func(*AntigravityGatewayService, context.Context, *gin.Context, *Account, []byte) (*ForwardResult, error)
+	}{
+		{
+			name: "chat completions",
+			path: "/v1/chat/completions",
+			body: []byte(`{"model":"gemini-3.1-pro-high","messages":[{"role":"user","content":"use a tool"}]}`),
+			call: func(svc *AntigravityGatewayService, ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+				return svc.ForwardAsChatCompletions(ctx, c, account, body, nil)
+			},
+		},
+		{
+			name: "responses",
+			path: "/v1/responses",
+			body: []byte(`{"model":"gemini-3.1-pro-high","input":"use a tool"}`),
+			call: func(svc *AntigravityGatewayService, ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+				return svc.ForwardAsResponses(ctx, c, account, body, nil)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			malformedBody := `data: {"response":{"responseId":"resp_malformed","candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"sig-empty"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}]}}` + "\n\n"
+			upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(malformedBody)),
+			}}}
+			svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, upstream)
+			c, recorder := newAntigravityCompatContext(http.MethodPost, tt.path, tt.body)
+
+			result, err := tt.call(svc, context.Background(), c, newAntigravityCompatAccount(AccountTypeOAuth), tt.body)
+
+			require.Nil(t, result)
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.True(t, failoverErr.RetryableOnSameAccount)
+			require.Equal(t, antigravityMalformedFunctionCallReason, failoverErr.Reason)
+			require.Empty(t, recorder.Body.String())
+		})
+	}
+}
+
+func TestAntigravityCompatMalformedFunctionCallAfterOutputEmitsError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, nil)
+	c, recorder := newAntigravityCompatContext(http.MethodPost, "/v1/chat/completions", nil)
+	body := strings.Join([]string{
+		`data: {"response":{"responseId":"resp_partial","candidates":[{"content":{"parts":[{"text":"partial"}]}}]}}`,
+		"",
+		`data: {"response":{"responseId":"resp_partial","candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"sig-empty"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}]}}`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	result, err := svc.handleChatCompletionsStreamingFromAntigravity(c, resp, time.Now(), "gemini-3.7-flash", false)
+
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Contains(t, recorder.Body.String(), `"malformed_function_call"`)
+	require.NotContains(t, recorder.Body.String(), `"finish_reason":"stop"`)
+	require.NotContains(t, recorder.Body.String(), "data: [DONE]")
+}
+
 func TestAntigravityCompatUsageOnlyNonStreamingTriggersFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
