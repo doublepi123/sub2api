@@ -354,15 +354,21 @@ export default {
       antigravityProjectIdHint:
         'standard-tier 且未自动返回 project_id 的 Antigravity 账号需要填写用户自带 GCP project。',
       kiro: {
+        authMethod: '登录方式',
+        builderId: 'AWS Builder ID',
+        social: 'Google 登录',
         accessToken: 'Access Token（可选）',
         refreshToken: 'Refresh Token',
         clientId: 'OIDC Client ID',
         clientSecret: 'OIDC Client Secret',
         region: 'AWS 区域',
-        profileArn: 'CodeWhisperer Profile ARN',
+        profileArn: 'CodeWhisperer Profile ARN（可选）',
         builderIdHint: '填写 Kiro CLI 注册的 Builder ID 凭据。Access Token 可以留空，服务端会自动刷新。',
+        socialHint: '填写 Kiro 通过 Google 登录后导出的 Refresh Token。Access Token 和 Profile ARN 可留空，服务端刷新时会回填。',
         credentialsRequired: 'Refresh Token、Client ID 和 Client Secret 均为必填项',
-        editSecretsHint: '敏感字段不会回显；留空表示保留当前值。'
+        socialCredentialsRequired: 'Refresh Token 为必填项',
+        editSecretsHint: '敏感字段不会回显；留空表示保留当前值。',
+        socialAccountHint: '当前账号使用 Google 登录，不需要 Client ID 和 Client Secret。'
       },
       accountSchedulingThresholdOverride: '账号自动停调阈值覆盖',
       accountSchedulingThresholdOverrideHint:

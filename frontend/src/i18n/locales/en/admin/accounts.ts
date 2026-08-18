@@ -151,15 +151,21 @@ export default {
       antigravityProjectIdHint:
         'Antigravity standard-tier accounts that do not receive an automatic project_id need a user-owned GCP project.',
       kiro: {
+        authMethod: 'Auth Method',
+        builderId: 'AWS Builder ID',
+        social: 'Google',
         accessToken: 'Access token (optional)',
         refreshToken: 'Refresh token',
         clientId: 'OIDC client ID',
         clientSecret: 'OIDC client secret',
         region: 'AWS region',
-        profileArn: 'CodeWhisperer profile ARN',
+        profileArn: 'CodeWhisperer profile ARN (optional)',
         builderIdHint: 'Use the Builder ID credentials registered by Kiro CLI. The access token may be omitted and will be refreshed automatically.',
+        socialHint: 'Paste the refresh token exported after signing into Kiro with Google. Access token and profile ARN can be omitted and will be filled in on refresh.',
         credentialsRequired: 'Refresh token, client ID, and client secret are required',
-        editSecretsHint: 'Secret values are hidden. Leave a secret field empty to retain its current value.'
+        socialCredentialsRequired: 'Refresh token is required',
+        editSecretsHint: 'Secret values are hidden. Leave a secret field empty to retain its current value.',
+        socialAccountHint: 'This account uses Google sign-in, so client ID and client secret are not required.'
       },
       accountSchedulingThresholdOverride: 'Account Auto-Pause Threshold Override',
       accountSchedulingThresholdOverrideHint:

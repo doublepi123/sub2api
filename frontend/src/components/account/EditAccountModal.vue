@@ -27,6 +27,13 @@
       </div>
 
       <div v-if="account.platform === 'kiro'" class="space-y-4">
+        <div
+          v-if="isKiroSocialAccount"
+          class="rounded-lg bg-blue-50 p-3 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300"
+          data-testid="kiro-social-account-hint"
+        >
+          {{ t('admin.accounts.kiro.socialAccountHint') }}
+        </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label class="input-label">{{ t('admin.accounts.kiro.accessToken') }}</label>
@@ -52,40 +59,42 @@
               :placeholder="t('admin.accounts.leaveEmptyToKeep')"
             />
           </div>
-          <div>
-            <label class="input-label">{{ t('admin.accounts.kiro.clientId') }}</label>
-            <input
-              v-model="editKiroClientId"
-              data-testid="edit-kiro-client-id"
-              type="password"
-              class="input font-mono"
-              autocomplete="new-password"
-              data-1p-ignore
-              :placeholder="t('admin.accounts.leaveEmptyToKeep')"
-            />
-          </div>
-          <div>
-            <label class="input-label">{{ t('admin.accounts.kiro.clientSecret') }}</label>
-            <input
-              v-model="editKiroClientSecret"
-              data-testid="edit-kiro-client-secret"
-              type="password"
-              class="input font-mono"
-              autocomplete="new-password"
-              data-1p-ignore
-              :placeholder="t('admin.accounts.leaveEmptyToKeep')"
-            />
-          </div>
+          <template v-if="!isKiroSocialAccount">
+            <div>
+              <label class="input-label">{{ t('admin.accounts.kiro.clientId') }}</label>
+              <input
+                v-model="editKiroClientId"
+                data-testid="edit-kiro-client-id"
+                type="password"
+                class="input font-mono"
+                autocomplete="new-password"
+                data-1p-ignore
+                :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.accounts.kiro.clientSecret') }}</label>
+              <input
+                v-model="editKiroClientSecret"
+                data-testid="edit-kiro-client-secret"
+                type="password"
+                class="input font-mono"
+                autocomplete="new-password"
+                data-1p-ignore
+                :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+              />
+            </div>
+          </template>
           <div>
             <label class="input-label">{{ t('admin.accounts.kiro.region') }}</label>
             <input v-model="editKiroRegion" data-testid="edit-kiro-region" type="text" required class="input font-mono" />
           </div>
           <div>
             <label class="input-label">{{ t('admin.accounts.kiro.profileArn') }}</label>
-            <input v-model="editKiroProfileArn" data-testid="edit-kiro-profile-arn" type="text" required class="input font-mono" />
+            <input v-model="editKiroProfileArn" data-testid="edit-kiro-profile-arn" type="text" :required="!isKiroSocialAccount" class="input font-mono" />
           </div>
         </div>
-        <p class="input-hint">{{ t('admin.accounts.kiro.editSecretsHint') }}</p>
+        <p class="input-hint">{{ isKiroSocialAccount ? t('admin.accounts.kiro.socialHint') : t('admin.accounts.kiro.editSecretsHint') }}</p>
       </div>
 
       <!-- API Key fields (only for apikey type) -->
@@ -2953,6 +2962,23 @@ const editKiroClientSecret = ref('')
 const editKiroRegion = ref('us-east-1')
 const editKiroProfileArn = ref('arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX')
 
+const isKiroSocialAccount = computed(() => {
+  if (props.account?.platform !== 'kiro') return false
+  const creds = props.account?.credentials as Record<string, unknown> | undefined
+  const authMethod = String(creds?.auth_method || '').toLowerCase()
+  if (authMethod === 'social' || authMethod === 'google' || authMethod === 'github') {
+    return true
+  }
+  if (authMethod === 'idc' || authMethod === 'builder_id') {
+    return false
+  }
+  const status = props.account?.credentials_status as Record<string, unknown> | undefined
+  if (status && !status.has_client_id && !status.has_client_secret) {
+    return true
+  }
+  return false
+})
+
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
 // 二者均可修正（早期创建的账号可能存错默认值），切换时重置 base_url 预置。
@@ -4522,8 +4548,13 @@ const handleSubmit = async () => {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newCredentials: Record<string, unknown> = {
         ...currentCredentials,
-        region: editKiroRegion.value.trim() || 'us-east-1',
-        profile_arn: editKiroProfileArn.value.trim()
+        region: editKiroRegion.value.trim() || 'us-east-1'
+      }
+      const profileArn = editKiroProfileArn.value.trim()
+      if (profileArn) {
+        newCredentials.profile_arn = profileArn
+      } else {
+        delete newCredentials.profile_arn
       }
       if (editKiroAccessToken.value.trim()) newCredentials.access_token = editKiroAccessToken.value.trim()
       if (editKiroRefreshToken.value.trim()) newCredentials.refresh_token = editKiroRefreshToken.value.trim()

@@ -11,6 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSocialRefreshURLUsesDesktopAuthHost(t *testing.T) {
+	require.Equal(t, "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken", SocialRefreshURL(""))
+	require.Equal(t, "https://prod.eu-central-1.auth.desktop.kiro.dev/refreshToken", SocialRefreshURL("eu-central-1"))
+}
+
 func TestBuildRequestConvertsHistoryToolsAndSanitizesSchema(t *testing.T) {
 	body := []byte(`{
       "model":"public-alias",

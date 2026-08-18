@@ -1231,4 +1231,35 @@ describe('EditAccountModal', () => {
     expect(credentials).not.toHaveProperty('client_id')
     expect(credentials).not.toHaveProperty('client_secret')
   })
+
+  it('renders social hint and hides client fields for Kiro social accounts', async () => {
+    const account = {
+      ...buildKiroAccount(),
+      credentials: {
+        auth_method: 'social',
+        region: 'us-east-1'
+      },
+      credentials_status: {
+        has_refresh_token: true
+      }
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+
+    expect(wrapper.find('[data-testid="kiro-social-account-hint"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="edit-kiro-client-id"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="edit-kiro-client-secret"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="edit-kiro-refresh-token"]').exists()).toBe(true)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials).toMatchObject({
+      auth_method: 'social',
+      region: 'us-east-1'
+    })
+    expect(credentials).not.toHaveProperty('client_id')
+    expect(credentials).not.toHaveProperty('client_secret')
+  })
 })

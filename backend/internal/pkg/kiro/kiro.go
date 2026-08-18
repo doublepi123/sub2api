@@ -49,6 +49,13 @@ func OIDCTokenURL(region string) string {
 	return "https://oidc." + region + ".amazonaws.com/token"
 }
 
+// SocialRefreshURL is the Kiro desktop auth endpoint used by Google/GitHub
+// social login. It is distinct from AWS SSO OIDC used by Builder ID / IdC.
+func SocialRefreshURL(region string) string {
+	region = normalizedRegion(region)
+	return "https://prod." + region + ".auth.desktop.kiro.dev/refreshToken"
+}
+
 func normalizedRegion(region string) string {
 	if region = strings.TrimSpace(region); region != "" {
 		return region

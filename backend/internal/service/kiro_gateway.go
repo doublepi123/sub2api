@@ -210,20 +210,38 @@ func (s *GatewayService) kiroAccessToken(ctx context.Context, account *Account, 
 		return token, nil
 	}
 	refreshToken := strings.TrimSpace(account.GetCredential("refresh_token"))
+	if refreshToken == "" {
+		if !force && token != "" {
+			return token, nil
+		}
+		return "", errors.New("kiro refresh token is required")
+	}
+
+	social := kiroUsesSocialRefresh(account)
 	clientID := strings.TrimSpace(account.GetCredential("client_id"))
 	clientSecret := strings.TrimSpace(account.GetCredential("client_secret"))
-	if refreshToken == "" || clientID == "" || clientSecret == "" {
+	if !social && (clientID == "" || clientSecret == "") {
 		if !force && token != "" {
 			return token, nil
 		}
 		return "", errors.New("kiro Builder ID refresh credentials are incomplete")
 	}
 
-	body, _ := json.Marshal(map[string]string{
-		"grantType": "refresh_token", "clientId": clientID,
-		"clientSecret": clientSecret, "refreshToken": refreshToken,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kiro.OIDCTokenURL(account.GetCredential("region")), bytes.NewReader(body))
+	var (
+		body     []byte
+		tokenURL string
+	)
+	if social {
+		body, _ = json.Marshal(map[string]string{"refreshToken": refreshToken})
+		tokenURL = kiro.SocialRefreshURL(account.GetCredential("region"))
+	} else {
+		body, _ = json.Marshal(map[string]string{
+			"grantType": "refresh_token", "clientId": clientID,
+			"clientSecret": clientSecret, "refreshToken": refreshToken,
+		})
+		tokenURL = kiro.OIDCTokenURL(account.GetCredential("region"))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -241,6 +259,7 @@ func (s *GatewayService) kiroAccessToken(ctx context.Context, account *Account, 
 		AccessToken  string `json:"accessToken"`
 		RefreshToken string `json:"refreshToken"`
 		ExpiresIn    int64  `json:"expiresIn"`
+		ProfileArn   string `json:"profileArn"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return "", fmt.Errorf("decode kiro refresh response: %w", err)
@@ -253,6 +272,12 @@ func (s *GatewayService) kiroAccessToken(ctx context.Context, account *Account, 
 	if result.RefreshToken != "" {
 		credentials["refresh_token"] = result.RefreshToken
 	}
+	if profileARN := strings.TrimSpace(result.ProfileArn); profileARN != "" {
+		credentials["profile_arn"] = profileARN
+	}
+	if social {
+		credentials["auth_method"] = "social"
+	}
 	if result.ExpiresIn <= 0 {
 		result.ExpiresIn = 3600
 	}
@@ -261,6 +286,22 @@ func (s *GatewayService) kiroAccessToken(ctx context.Context, account *Account, 
 		return "", fmt.Errorf("persist refreshed kiro token: %w", err)
 	}
 	return result.AccessToken, nil
+}
+
+// kiroUsesSocialRefresh reports whether the account should refresh via Kiro's
+// desktop social endpoint (Google/GitHub) instead of AWS SSO OIDC.
+func kiroUsesSocialRefresh(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(account.GetCredential("auth_method"))) {
+	case "social", "google", "github":
+		return true
+	case "idc", "builder_id", "builder-id", "builderid":
+		return false
+	}
+	return strings.TrimSpace(account.GetCredential("client_id")) == "" &&
+		strings.TrimSpace(account.GetCredential("client_secret")) == ""
 }
 
 func kiroTokenNeedsRefresh(raw string, now time.Time) bool {

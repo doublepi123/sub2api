@@ -219,6 +219,38 @@
       </div>
 
       <div v-if="form.platform === 'kiro'" class="space-y-4">
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.authMethod') }}</label>
+          <div class="mt-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+            <button
+              type="button"
+              data-testid="kiro-auth-method-builder-id"
+              @click="selectKiroAuthMethod('idc')"
+              :class="[
+                'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-all',
+                kiroAuthMethod === 'idc'
+                  ? 'bg-white text-cyan-700 shadow-sm dark:bg-dark-600 dark:text-cyan-300'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+              ]"
+            >
+              {{ t('admin.accounts.kiro.builderId') }}
+            </button>
+            <button
+              type="button"
+              data-testid="kiro-auth-method-social"
+              @click="selectKiroAuthMethod('social')"
+              :class="[
+                'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-all',
+                kiroAuthMethod === 'social'
+                  ? 'bg-white text-cyan-700 shadow-sm dark:bg-dark-600 dark:text-cyan-300'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+              ]"
+            >
+              {{ t('admin.accounts.kiro.social') }}
+            </button>
+          </div>
+        </div>
+
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label class="input-label">{{ t('admin.accounts.kiro.accessToken') }}</label>
@@ -228,24 +260,26 @@
             <label class="input-label">{{ t('admin.accounts.kiro.refreshToken') }}</label>
             <input v-model="kiroRefreshToken" data-testid="kiro-refresh-token" type="password" required class="input font-mono" autocomplete="new-password" data-1p-ignore />
           </div>
-          <div>
-            <label class="input-label">{{ t('admin.accounts.kiro.clientId') }}</label>
-            <input v-model="kiroClientId" data-testid="kiro-client-id" type="password" required class="input font-mono" autocomplete="new-password" data-1p-ignore />
-          </div>
-          <div>
-            <label class="input-label">{{ t('admin.accounts.kiro.clientSecret') }}</label>
-            <input v-model="kiroClientSecret" data-testid="kiro-client-secret" type="password" required class="input font-mono" autocomplete="new-password" data-1p-ignore />
-          </div>
+          <template v-if="kiroAuthMethod === 'idc'">
+            <div>
+              <label class="input-label">{{ t('admin.accounts.kiro.clientId') }}</label>
+              <input v-model="kiroClientId" data-testid="kiro-client-id" type="password" required class="input font-mono" autocomplete="new-password" data-1p-ignore />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.accounts.kiro.clientSecret') }}</label>
+              <input v-model="kiroClientSecret" data-testid="kiro-client-secret" type="password" required class="input font-mono" autocomplete="new-password" data-1p-ignore />
+            </div>
+          </template>
           <div>
             <label class="input-label">{{ t('admin.accounts.kiro.region') }}</label>
             <input v-model="kiroRegion" data-testid="kiro-region" type="text" required class="input font-mono" />
           </div>
           <div>
             <label class="input-label">{{ t('admin.accounts.kiro.profileArn') }}</label>
-            <input v-model="kiroProfileArn" data-testid="kiro-profile-arn" type="text" required class="input font-mono" />
+            <input v-model="kiroProfileArn" data-testid="kiro-profile-arn" type="text" :required="kiroAuthMethod === 'idc'" class="input font-mono" />
           </div>
         </div>
-        <p class="input-hint">{{ t('admin.accounts.kiro.builderIdHint') }}</p>
+        <p class="input-hint">{{ kiroAuthMethod === 'social' ? t('admin.accounts.kiro.socialHint') : t('admin.accounts.kiro.builderIdHint') }}</p>
       </div>
 
       <!-- Account Type Selection (Anthropic) -->
@@ -3963,12 +3997,25 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+const kiroAuthMethod = ref<'idc' | 'social'>('idc')
 const kiroAccessToken = ref('')
 const kiroRefreshToken = ref('')
 const kiroClientId = ref('')
 const kiroClientSecret = ref('')
 const kiroRegion = ref('us-east-1')
-const kiroProfileArn = ref('arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX')
+const kiroDefaultProfileArn = 'arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX'
+const kiroProfileArn = ref(kiroDefaultProfileArn)
+
+const selectKiroAuthMethod = (method: 'idc' | 'social') => {
+  const previous = kiroAuthMethod.value
+  kiroAuthMethod.value = method
+  if (method === 'social' && previous === 'idc' && kiroProfileArn.value.trim() === kiroDefaultProfileArn) {
+    kiroProfileArn.value = ''
+  }
+  if (method === 'idc' && previous === 'social' && !kiroProfileArn.value.trim()) {
+    kiroProfileArn.value = kiroDefaultProfileArn
+  }
+}
 const upstreamBillingAutoProbeEnabled = ref(true)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
@@ -5011,6 +5058,7 @@ const resetForm = () => {
   apiProtocol.value = 'chat_completions'
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
+  kiroAuthMethod.value = 'idc'
   kiroAccessToken.value = ''
   kiroRefreshToken.value = ''
   kiroClientId.value = ''
@@ -5318,11 +5366,28 @@ const handleSubmit = async () => {
       appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
       return
     }
+    if (kiroAuthMethod.value === 'social') {
+      if (!kiroRefreshToken.value.trim()) {
+        appStore.showError(t('admin.accounts.kiro.socialCredentialsRequired'))
+        return
+      }
+      const credentials: Record<string, unknown> = {
+        auth_method: 'social',
+        refresh_token: kiroRefreshToken.value.trim(),
+        region: kiroRegion.value.trim() || 'us-east-1'
+      }
+      if (kiroProfileArn.value.trim()) credentials.profile_arn = kiroProfileArn.value.trim()
+      if (kiroAccessToken.value.trim()) credentials.access_token = kiroAccessToken.value.trim()
+      await createAccountAndFinish('kiro', 'oauth', credentials)
+      return
+    }
+
     if (!kiroRefreshToken.value.trim() || !kiroClientId.value.trim() || !kiroClientSecret.value.trim()) {
       appStore.showError(t('admin.accounts.kiro.credentialsRequired'))
       return
     }
     const credentials: Record<string, unknown> = {
+      auth_method: 'idc',
       refresh_token: kiroRefreshToken.value.trim(),
       client_id: kiroClientId.value.trim(),
       client_secret: kiroClientSecret.value.trim(),

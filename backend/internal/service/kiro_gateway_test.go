@@ -26,7 +26,9 @@ func (r *kiroRefreshRepo) UpdateCredentials(_ context.Context, _ int64, credenti
 }
 
 type kiroRefreshUpstream struct {
+	requestURL  string
 	requestBody map[string]any
+	response    string
 }
 
 func (u *kiroRefreshUpstream) Do(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
@@ -34,15 +36,20 @@ func (u *kiroRefreshUpstream) Do(_ *http.Request, _ string, _ int64, _ int) (*ht
 }
 
 func (u *kiroRefreshUpstream) DoWithTLS(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	u.requestURL = req.URL.String()
 	_ = json.NewDecoder(req.Body).Decode(&u.requestBody)
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{},
-		Body: io.NopCloser(strings.NewReader(`{
+	body := u.response
+	if body == "" {
+		body = `{
           "accessToken":"new-access",
           "refreshToken":"rotated-refresh",
           "expiresIn":3600
-        }`)),
+        }`
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}, nil
 }
 
@@ -59,6 +66,7 @@ func TestKiroAccessTokenRefreshesAndPersistsRotatedCredentials(t *testing.T) {
 	token, err := svc.kiroAccessToken(context.Background(), account, false)
 	require.NoError(t, err)
 	require.Equal(t, "new-access", token)
+	require.Contains(t, upstream.requestURL, "oidc.us-east-1.amazonaws.com/token")
 	require.Equal(t, "refresh_token", upstream.requestBody["grantType"])
 	require.Equal(t, "client-id", upstream.requestBody["clientId"])
 	require.Equal(t, "client-secret", upstream.requestBody["clientSecret"])
@@ -66,6 +74,48 @@ func TestKiroAccessTokenRefreshesAndPersistsRotatedCredentials(t *testing.T) {
 	require.Equal(t, "new-access", repo.saved["access_token"])
 	require.Equal(t, "rotated-refresh", repo.saved["refresh_token"])
 	require.NotEmpty(t, repo.saved["expires_at"])
+}
+
+func TestKiroAccessTokenRefreshesSocialGoogleCredentials(t *testing.T) {
+	repo := &kiroRefreshRepo{}
+	upstream := &kiroRefreshUpstream{response: `{
+          "accessToken":"social-access",
+          "refreshToken":"rotated-social",
+          "expiresIn":1800,
+          "profileArn":"arn:aws:codewhisperer:us-east-1:123:profile/google"
+        }`}
+	svc := &GatewayService{accountRepo: repo, httpUpstream: upstream}
+	account := &Account{ID: 74, Platform: PlatformKiro, Type: AccountTypeOAuth, Credentials: map[string]any{
+		"access_token": "expired-access", "refresh_token": "social-refresh",
+		"auth_method": "social", "expires_at": time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+	}}
+
+	token, err := svc.kiroAccessToken(context.Background(), account, false)
+	require.NoError(t, err)
+	require.Equal(t, "social-access", token)
+	require.Equal(t, "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken", upstream.requestURL)
+	require.Equal(t, map[string]any{"refreshToken": "social-refresh"}, upstream.requestBody)
+	require.NotContains(t, upstream.requestBody, "clientId")
+	require.Equal(t, "social-access", repo.saved["access_token"])
+	require.Equal(t, "rotated-social", repo.saved["refresh_token"])
+	require.Equal(t, "arn:aws:codewhisperer:us-east-1:123:profile/google", repo.saved["profile_arn"])
+	require.Equal(t, "social", repo.saved["auth_method"])
+	require.NotEmpty(t, repo.saved["expires_at"])
+}
+
+func TestKiroUsesSocialRefreshInfersMissingClientPair(t *testing.T) {
+	require.True(t, kiroUsesSocialRefresh(&Account{Credentials: map[string]any{
+		"refresh_token": "rt", "auth_method": "google",
+	}}))
+	require.True(t, kiroUsesSocialRefresh(&Account{Credentials: map[string]any{
+		"refresh_token": "rt",
+	}}))
+	require.False(t, kiroUsesSocialRefresh(&Account{Credentials: map[string]any{
+		"refresh_token": "rt", "client_id": "id", "client_secret": "secret",
+	}}))
+	require.False(t, kiroUsesSocialRefresh(&Account{Credentials: map[string]any{
+		"refresh_token": "rt", "client_id": "id", "client_secret": "secret", "auth_method": "idc",
+	}}))
 }
 
 func TestKiroSecretsAreSensitiveCredentials(t *testing.T) {
