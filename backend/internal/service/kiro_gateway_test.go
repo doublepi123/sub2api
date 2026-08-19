@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -256,4 +257,79 @@ func TestKiroConversationSeedEmptyWhenNoExplicitSession(t *testing.T) {
 		SessionContext: &SessionContext{APIKeyID: 1, ClientSessionID: "   "},
 		MetadataUserID: "not-a-valid-user-id",
 	}))
+}
+
+func mustParseKiroSeedRequest(t *testing.T, body string, ctx *SessionContext) *ParsedRequest {
+	t.Helper()
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(body)), domain.PlatformAnthropic)
+	require.NoError(t, err)
+	parsed.SessionContext = ctx
+	return parsed
+}
+
+func kiroSeedBody(system string, messages []any) string {
+	body := map[string]any{
+		"model":    "claude-sonnet-4.5",
+		"messages": messages,
+	}
+	if system != "" {
+		body["system"] = system
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func TestKiroConversationSeedFallsBackToStableContentHash(t *testing.T) {
+	ctx := &SessionContext{APIKeyID: 7, ClientIP: "1.2.3.4", UserAgent: "new-api/1.0"}
+	parsed := mustParseKiroSeedRequest(t, kiroSeedBody("You are helpful.", []any{
+		map[string]any{"role": "user", "content": "hello"},
+	}), ctx)
+
+	seed := kiroConversationSeed(parsed)
+	require.True(t, strings.HasPrefix(seed, "sess:7:"), "fallback seed must be sess:<apiKeyID>:<hash>, got %q", seed)
+	require.NotContains(t, seed, "sk-")
+	require.Equal(t, seed, kiroConversationSeed(parsed), "fallback seed must be deterministic")
+}
+
+func TestKiroConversationSeedFallbackStableAcrossTurns(t *testing.T) {
+	ctx := &SessionContext{APIKeyID: 7, ClientIP: "1.2.3.4", UserAgent: "new-api/1.0"}
+	round1 := mustParseKiroSeedRequest(t, kiroSeedBody("You are helpful.", []any{
+		map[string]any{"role": "user", "content": "hello"},
+	}), ctx)
+	round2 := mustParseKiroSeedRequest(t, kiroSeedBody("You are helpful.", []any{
+		map[string]any{"role": "user", "content": "hello"},
+		map[string]any{"role": "assistant", "content": "Hi"},
+		map[string]any{"role": "user", "content": "next"},
+	}), ctx)
+
+	require.Equal(t, kiroConversationSeed(round1), kiroConversationSeed(round2))
+}
+
+func TestKiroConversationSeedFallbackIsolatesAPIKeysAndFirstUser(t *testing.T) {
+	body := kiroSeedBody("You are helpful.", []any{map[string]any{"role": "user", "content": "hello"}})
+	a := mustParseKiroSeedRequest(t, body, &SessionContext{APIKeyID: 1, ClientIP: "1.2.3.4", UserAgent: "new-api/1.0"})
+	b := mustParseKiroSeedRequest(t, body, &SessionContext{APIKeyID: 2, ClientIP: "1.2.3.4", UserAgent: "new-api/1.0"})
+	other := mustParseKiroSeedRequest(t, kiroSeedBody("You are helpful.", []any{
+		map[string]any{"role": "user", "content": "different"},
+	}), &SessionContext{APIKeyID: 1, ClientIP: "1.2.3.4", UserAgent: "new-api/1.0"})
+
+	require.NotEqual(t, kiroConversationSeed(a), kiroConversationSeed(b))
+	require.NotEqual(t, kiroConversationSeed(a), kiroConversationSeed(other))
+	require.True(t, strings.HasPrefix(kiroConversationSeed(a), "sess:1:"))
+	require.True(t, strings.HasPrefix(kiroConversationSeed(b), "sess:2:"))
+}
+
+func TestKiroConversationSeedExplicitSourcesBeatFallback(t *testing.T) {
+	metadata := "user_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2_account__session_123e4567-e89b-12d3-a456-426614174000"
+	body := kiroSeedBody("You are helpful.", []any{map[string]any{"role": "user", "content": "hello"}})
+
+	withHeader := mustParseKiroSeedRequest(t, body, &SessionContext{APIKeyID: 7, ClientSessionID: "conv-explicit"})
+	require.Equal(t, isolateClientSessionStickySeed(7, "conv-explicit"), kiroConversationSeed(withHeader))
+
+	withMetadata := mustParseKiroSeedRequest(t, body, &SessionContext{APIKeyID: 7})
+	withMetadata.MetadataUserID = metadata
+	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", kiroConversationSeed(withMetadata))
 }

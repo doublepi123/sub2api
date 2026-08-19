@@ -911,7 +911,7 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	}
 	appendStickyContentAnchor(&combined, parsed)
 	if combined.Len() > 0 {
-		hash := s.hashContent(combined.String())
+		hash := hashStickyContent(combined.String())
 		s.logStickyHashSource("message_content_fallback", hash, combined.Len())
 		return hash
 	}
@@ -1298,9 +1298,13 @@ func extractCacheableTextFromMessagesRaw(raw []byte) string {
 	return text
 }
 
-func (s *GatewayService) hashContent(content string) string {
+func hashStickyContent(content string) string {
 	h := xxhash.Sum64String(content)
 	return strconv.FormatUint(h, 36)
+}
+
+func (s *GatewayService) hashContent(content string) string {
+	return hashStickyContent(content)
 }
 
 // GetAccessToken 获取账号凭证

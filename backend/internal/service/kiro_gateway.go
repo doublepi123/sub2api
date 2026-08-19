@@ -24,6 +24,9 @@ var kiroRefreshLocks sync.Map
 // agentContinuationId. Empty seed is safe: kiro.BuildRequest falls back to a
 // random UUID per request. Cache-control prefixes are intentionally excluded
 // so unrelated conversations that share a prompt prefix do not merge.
+//
+// Priority: explicit session header > metadata.user_id session > content
+// fallback (sess:<apiKeyID>:<hash>) > empty/random UUID.
 func kiroConversationSeed(parsed *ParsedRequest) string {
 	if parsed == nil {
 		return ""
@@ -40,7 +43,32 @@ func kiroConversationSeed(parsed *ParsedRequest) string {
 			}
 		}
 	}
-	return ""
+	return kiroConversationFallbackSeed(parsed)
+}
+
+// kiroConversationFallbackSeed pins a conversation when the client omitted
+// session headers. The hash is built from IP + UA + turn-stable request
+// anchors (model / tools / system / first user) so later turns keep the same
+// conversationId. The raw API key is never mixed in; only apiKeyID is used.
+func kiroConversationFallbackSeed(parsed *ParsedRequest) string {
+	if parsed == nil {
+		return ""
+	}
+	var combined strings.Builder
+	var apiKeyID int64
+	if parsed.SessionContext != nil {
+		apiKeyID = parsed.SessionContext.APIKeyID
+		_, _ = combined.WriteString(strings.TrimSpace(parsed.SessionContext.ClientIP))
+		_, _ = combined.WriteString(":")
+		_, _ = combined.WriteString(NormalizeSessionUserAgent(parsed.SessionContext.UserAgent))
+		_, _ = combined.WriteString("|")
+	}
+	contentStart := combined.Len()
+	appendStickyContentAnchor(&combined, parsed)
+	if combined.Len() == contentStart {
+		return ""
+	}
+	return isolateClientSessionStickySeed(apiKeyID, hashStickyContent(combined.String()))
 }
 
 func kiroAccountLock(accountID int64) *sync.Mutex {
