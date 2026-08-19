@@ -24,7 +24,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return fmt.Errorf("parse request: empty request")
 	}
 	if account != nil && account.Platform == PlatformKiro {
-		_, inputTokens, err := kiro.BuildRequest(parsed.Body.Bytes(), account.GetMappedModel(parsed.Model), account.GetCredential("profile_arn"))
+		_, inputTokens, err := kiro.BuildRequest(parsed.Body.Bytes(), account.GetMappedModel(parsed.Model), account.GetCredential("profile_arn"), kiroConversationSeed(parsed))
 		if err != nil {
 			s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 			return err

@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"hash/crc32"
 	"io"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+var uuidV4RE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 func TestSocialRefreshURLUsesDesktopAuthHost(t *testing.T) {
 	require.Equal(t, "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken", SocialRefreshURL(""))
@@ -28,7 +31,7 @@ func TestBuildRequestConvertsHistoryToolsAndSanitizesSchema(t *testing.T) {
       "tools":[{"name":"lookup","description":"Lookup","input_schema":{"type":"object","properties":{"q":{"type":"string","additionalProperties":false}},"required":[],"additionalProperties":false}}]
     }`)
 
-	payload, tokens, err := BuildRequest(body, "claude-haiku-4.5", "arn:test")
+	payload, tokens, err := BuildRequest(body, "claude-haiku-4.5", "arn:test", "")
 	require.NoError(t, err)
 	require.Positive(t, tokens)
 
@@ -52,6 +55,51 @@ func TestBuildRequestConvertsHistoryToolsAndSanitizesSchema(t *testing.T) {
 	schema := requireMap(t, inputSchema["json"])
 	require.NotContains(t, schema, "required")
 	require.NotContains(t, schema, "additionalProperties")
+	require.Regexp(t, uuidV4RE, state["conversationId"])
+	require.Regexp(t, uuidV4RE, state["agentContinuationId"])
+}
+
+func TestConversationIDFromSeedIsStableAndFormatted(t *testing.T) {
+	first := conversationIDFromSeed("sess:1:conv-a")
+	second := conversationIDFromSeed("sess:1:conv-a")
+	other := conversationIDFromSeed("sess:1:conv-b")
+	require.Equal(t, first, second)
+	require.NotEqual(t, first, other)
+	require.Regexp(t, uuidV4RE, first)
+	require.Regexp(t, uuidV4RE, conversationIDFromSeed(""))
+	require.NotEqual(t, conversationIDFromSeed(""), conversationIDFromSeed(""))
+}
+
+func TestAgentContinuationIDFollowsConversation(t *testing.T) {
+	conversationID := conversationIDFromSeed("sess:9:stable")
+	first := agentContinuationIDFromConversation(conversationID)
+	second := agentContinuationIDFromConversation(conversationID)
+	require.Equal(t, first, second)
+	require.NotEqual(t, conversationID, first)
+	require.Regexp(t, uuidV4RE, first)
+}
+
+func TestBuildRequestSeedPinsConversationIDs(t *testing.T) {
+	body := []byte(`{"model":"claude-haiku-4.5","messages":[{"role":"user","content":"hi"}]}`)
+	first, _, err := BuildRequest(body, "claude-haiku-4.5", "arn:test", "sess:1:conv-a")
+	require.NoError(t, err)
+	second, _, err := BuildRequest(body, "claude-haiku-4.5", "arn:test", "sess:1:conv-a")
+	require.NoError(t, err)
+	other, _, err := BuildRequest(body, "claude-haiku-4.5", "arn:test", "sess:2:conv-a")
+	require.NoError(t, err)
+
+	var a, b, c map[string]any
+	require.NoError(t, json.Unmarshal(first, &a))
+	require.NoError(t, json.Unmarshal(second, &b))
+	require.NoError(t, json.Unmarshal(other, &c))
+	stateA := requireMap(t, a["conversationState"])
+	stateB := requireMap(t, b["conversationState"])
+	stateC := requireMap(t, c["conversationState"])
+	require.Equal(t, stateA["conversationId"], stateB["conversationId"])
+	require.Equal(t, stateA["agentContinuationId"], stateB["agentContinuationId"])
+	require.NotEqual(t, stateA["conversationId"], stateC["conversationId"])
+	require.Regexp(t, uuidV4RE, stateA["conversationId"])
+	require.Regexp(t, uuidV4RE, stateA["agentContinuationId"])
 }
 
 func TestTransformResponseTextAndToolEvents(t *testing.T) {
@@ -128,6 +176,66 @@ func TestToolUseContributesToEstimatedOutputTokens(t *testing.T) {
 	var response map[string]any
 	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
 	require.Positive(t, requireMap(t, response["usage"])["output_tokens"])
+}
+
+func TestTransformResponseUsesUpstreamUsage(t *testing.T) {
+	events := [][]byte{
+		[]byte(`{"content":"hello"}`),
+		[]byte(`{"stopReason":"END_TURN","tokenUsage":{"uncachedInputTokens":21,"outputTokens":7,"cacheReadInputTokens":128,"cacheWriteInputTokens":32}}`),
+	}
+	var source bytes.Buffer
+	for _, event := range events {
+		_, err := source.Write(encodeEvent(t, event))
+		require.NoError(t, err)
+	}
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 4, false))
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
+	usage := requireMap(t, response["usage"])
+	require.Equal(t, float64(21), usage["input_tokens"])
+	require.Equal(t, float64(7), usage["output_tokens"])
+	require.Equal(t, float64(128), usage["cache_read_input_tokens"])
+	require.Equal(t, float64(32), usage["cache_creation_input_tokens"])
+}
+
+func TestTransformResponseReadsNestedMetadataUsage(t *testing.T) {
+	events := [][]byte{
+		[]byte(`{"content":"hello"}`),
+		[]byte(`{"stopReason":"END_TURN","metadata":{"tokenUsage":{"uncachedInputTokens":9,"outputTokens":3,"cacheReadInputTokens":64}}}`),
+	}
+	var source bytes.Buffer
+	for _, event := range events {
+		_, err := source.Write(encodeEvent(t, event))
+		require.NoError(t, err)
+	}
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 1, true))
+	require.Contains(t, out.String(), `"input_tokens":9`)
+	require.Contains(t, out.String(), `"output_tokens":3`)
+	require.Contains(t, out.String(), `"cache_read_input_tokens":64`)
+	require.NotContains(t, out.String(), `"cache_creation_input_tokens"`)
+}
+
+func TestTransformResponseIgnoresNegativeUsage(t *testing.T) {
+	events := [][]byte{
+		[]byte(`{"content":"hello world"}`),
+		[]byte(`{"stopReason":"END_TURN","tokenUsage":{"uncachedInputTokens":-1,"outputTokens":-8}}`),
+	}
+	var source bytes.Buffer
+	for _, event := range events {
+		_, err := source.Write(encodeEvent(t, event))
+		require.NoError(t, err)
+	}
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 11, false))
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
+	usage := requireMap(t, response["usage"])
+	require.Equal(t, float64(11), usage["input_tokens"])
+	require.Positive(t, usage["output_tokens"])
 }
 
 func requireMap(t *testing.T, value any) map[string]any {

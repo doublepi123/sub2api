@@ -72,7 +72,7 @@ type AccountTestOptions struct {
 }
 
 type kiroAccountTestGateway interface {
-	forwardKiroAnthropicResponse(ctx context.Context, account *Account, anthropicBody []byte, mappedModel string, stream bool) (*http.Response, error)
+	forwardKiroAnthropicResponse(ctx context.Context, account *Account, anthropicBody []byte, mappedModel string, stream bool, conversationSeed string) (*http.Response, error)
 }
 
 func firstAccountTestOptions(opts []AccountTestOptions) AccountTestOptions {
@@ -351,7 +351,7 @@ func (s *AccountTestService) testKiroAccountConnection(c *gin.Context, account *
 	}
 
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
-	resp, err := s.kiroGateway.forwardKiroAnthropicResponse(c.Request.Context(), account, payload, mappedModel, true)
+	resp, err := s.kiroGateway.forwardKiroAnthropicResponse(c.Request.Context(), account, payload, mappedModel, true, "")
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Kiro request failed: %s", err.Error()))
 	}

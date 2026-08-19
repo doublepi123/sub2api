@@ -20,6 +20,29 @@ import (
 
 var kiroRefreshLocks sync.Map
 
+// kiroConversationSeed derives a stable seed for Kiro conversationId /
+// agentContinuationId. Empty seed is safe: kiro.BuildRequest falls back to a
+// random UUID per request. Cache-control prefixes are intentionally excluded
+// so unrelated conversations that share a prompt prefix do not merge.
+func kiroConversationSeed(parsed *ParsedRequest) string {
+	if parsed == nil {
+		return ""
+	}
+	if parsed.SessionContext != nil {
+		if sid := strings.TrimSpace(parsed.SessionContext.ClientSessionID); sid != "" {
+			return isolateClientSessionStickySeed(parsed.SessionContext.APIKeyID, sid)
+		}
+	}
+	if parsed.MetadataUserID != "" {
+		if uid := ParseMetadataUserID(parsed.MetadataUserID); uid != nil {
+			if sid := strings.TrimSpace(uid.SessionID); sid != "" {
+				return sid
+			}
+		}
+	}
+	return ""
+}
+
 func kiroAccountLock(accountID int64) *sync.Mutex {
 	value, _ := kiroRefreshLocks.LoadOrStore(accountID, &sync.Mutex{})
 	lock, ok := value.(*sync.Mutex)
@@ -33,7 +56,7 @@ func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, accoun
 	startTime := time.Now()
 	originalModel := parsed.Model
 	mappedModel := account.GetMappedModel(originalModel)
-	resp, err := s.forwardKiroAnthropicResponse(ctx, account, parsed.Body.Bytes(), mappedModel, parsed.Stream)
+	resp, err := s.forwardKiroAnthropicResponse(ctx, account, parsed.Body.Bytes(), mappedModel, parsed.Stream, kiroConversationSeed(parsed))
 	if err != nil {
 		if c != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"type": "error", "error": gin.H{"type": "upstream_error", "message": "Kiro upstream request failed"}})
@@ -78,9 +101,9 @@ func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, accoun
 // forwardKiroAnthropicResponse sends an Anthropic request to Kiro and exposes
 // the result as an Anthropic-compatible HTTP response. Kiro always streams its
 // binary response; stream controls only the synthetic response format.
-func (s *GatewayService) forwardKiroAnthropicResponse(ctx context.Context, account *Account, anthropicBody []byte, mappedModel string, stream bool) (*http.Response, error) {
+func (s *GatewayService) forwardKiroAnthropicResponse(ctx context.Context, account *Account, anthropicBody []byte, mappedModel string, stream bool, conversationSeed string) (*http.Response, error) {
 	profileARN := strings.TrimSpace(account.GetCredential("profile_arn"))
-	payload, inputTokens, err := kiro.BuildRequest(anthropicBody, mappedModel, profileARN)
+	payload, inputTokens, err := kiro.BuildRequest(anthropicBody, mappedModel, profileARN, conversationSeed)
 	if err != nil {
 		return nil, err
 	}

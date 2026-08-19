@@ -184,7 +184,7 @@ type kiroAccountTestGatewayStub struct {
 	stream bool
 }
 
-func (g *kiroAccountTestGatewayStub) forwardKiroAnthropicResponse(_ context.Context, _ *Account, body []byte, model string, stream bool) (*http.Response, error) {
+func (g *kiroAccountTestGatewayStub) forwardKiroAnthropicResponse(_ context.Context, _ *Account, body []byte, model string, stream bool, _ string) (*http.Response, error) {
 	g.body = append([]byte(nil), body...)
 	g.model = model
 	g.stream = stream
@@ -225,4 +225,35 @@ func TestAccountTestServiceRoutesKiroThroughKiroGateway(t *testing.T) {
 	require.Equal(t, "say test ok", message["content"])
 	require.Contains(t, recorder.Body.String(), "KIRO_TEST_OK")
 	require.Contains(t, recorder.Body.String(), `"success":true`)
+}
+
+func TestKiroConversationSeedUsesIsolatedClientSession(t *testing.T) {
+	parsed := &ParsedRequest{
+		MetadataUserID: "user_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2_account__session_123e4567-e89b-12d3-a456-426614174000",
+		SessionContext: &SessionContext{APIKeyID: 7, ClientSessionID: "conv-explicit"},
+	}
+	require.Equal(t, isolateClientSessionStickySeed(7, "conv-explicit"), kiroConversationSeed(parsed))
+	require.Equal(t, isolateClientSessionStickySeed(7, "conv-explicit"), kiroConversationSeed(parsed))
+}
+
+func TestKiroConversationSeedIsolatesAPIKeys(t *testing.T) {
+	a := &ParsedRequest{SessionContext: &SessionContext{APIKeyID: 1, ClientSessionID: "shared-sid"}}
+	b := &ParsedRequest{SessionContext: &SessionContext{APIKeyID: 2, ClientSessionID: "shared-sid"}}
+	require.NotEqual(t, kiroConversationSeed(a), kiroConversationSeed(b))
+}
+
+func TestKiroConversationSeedFallsBackToMetadataSession(t *testing.T) {
+	parsed := &ParsedRequest{
+		MetadataUserID: "user_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2_account__session_123e4567-e89b-12d3-a456-426614174000",
+	}
+	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", kiroConversationSeed(parsed))
+}
+
+func TestKiroConversationSeedEmptyWhenNoExplicitSession(t *testing.T) {
+	require.Empty(t, kiroConversationSeed(nil))
+	require.Empty(t, kiroConversationSeed(&ParsedRequest{}))
+	require.Empty(t, kiroConversationSeed(&ParsedRequest{
+		SessionContext: &SessionContext{APIKeyID: 1, ClientSessionID: "   "},
+		MetadataUserID: "not-a-valid-user-id",
+	}))
 }

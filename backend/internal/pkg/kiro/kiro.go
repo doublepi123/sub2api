@@ -3,6 +3,7 @@ package kiro
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -65,8 +66,10 @@ func normalizedRegion(region string) string {
 
 // BuildRequest converts an Anthropic Messages request into Kiro's observable
 // GenerateAssistantResponse payload. It intentionally has no dependency on any
-// third-party Kiro gateway implementation.
-func BuildRequest(body []byte, model, profileARN string) ([]byte, int, error) {
+// third-party Kiro gateway implementation. conversationSeed, when non-empty,
+// pins conversationId/agentContinuationId so the same gateway session can hit
+// Kiro's implicit prompt cache.
+func BuildRequest(body []byte, model, profileARN, conversationSeed string) ([]byte, int, error) {
 	var req apicompat.AnthropicRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, 0, fmt.Errorf("decode anthropic request: %w", err)
@@ -122,9 +125,9 @@ func BuildRequest(body []byte, model, profileARN string) ([]byte, int, error) {
 		userInput["userInputMessageContext"] = map[string]any{"tools": []any{}}
 	}
 
-	conversationID := uuid.NewString()
+	conversationID := conversationIDFromSeed(conversationSeed)
 	state := map[string]any{
-		"agentContinuationId": uuid.NewString(),
+		"agentContinuationId": agentContinuationIDFromConversation(conversationID),
 		"agentTaskType":       "vibe",
 		"chatTriggerType":     "MANUAL",
 		"conversationId":      conversationID,
@@ -324,6 +327,35 @@ func estimateTokens(data []byte) int {
 	return (n + 3) / 4
 }
 
+func conversationIDFromSeed(seed string) string {
+	seed = strings.TrimSpace(seed)
+	if seed == "" {
+		return uuid.NewString()
+	}
+	return deriveStableUUIDv4("kiro:conv:v1:" + seed)
+}
+
+func agentContinuationIDFromConversation(conversationID string) string {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return uuid.NewString()
+	}
+	return deriveStableUUIDv4("kiro:agent:v1:" + conversationID)
+}
+
+func deriveStableUUIDv4(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		binary.BigEndian.Uint32(b[0:4]),
+		binary.BigEndian.Uint16(b[4:6]),
+		binary.BigEndian.Uint16(b[6:8]),
+		binary.BigEndian.Uint16(b[8:10]),
+		b[10:16])
+}
+
 type eventMessage struct {
 	Headers map[string]string
 	Payload []byte
@@ -384,15 +416,19 @@ func parseHeaders(data []byte) (map[string]string, error) {
 }
 
 type streamState struct {
-	model       string
-	id          string
-	inputTokens int
-	outputText  strings.Builder
-	blocks      []apicompat.AnthropicContentBlock
-	active      int
-	hasActive   bool
-	hasTool     bool
-	stopReason  string
+	model            string
+	id               string
+	inputTokens      int
+	outputTokens     int
+	cacheReadTokens  int
+	cacheWriteTokens int
+	hasUpstreamUsage bool
+	outputText       strings.Builder
+	blocks           []apicompat.AnthropicContentBlock
+	active           int
+	hasActive        bool
+	hasTool          bool
+	stopReason       string
 }
 
 // TransformResponse converts Kiro's AWS event-stream response into either an
@@ -435,7 +471,7 @@ func TransformResponse(src io.Reader, dst io.Writer, model string, inputTokens i
 	response := apicompat.AnthropicResponse{
 		ID: state.id, Type: "message", Role: "assistant", Content: state.blocks,
 		Model: state.model, StopReason: &stop,
-		Usage: apicompat.AnthropicUsage{InputTokens: inputTokens, OutputTokens: state.estimatedOutputTokens()},
+		Usage: state.anthropicUsage(),
 	}
 	return json.NewEncoder(dst).Encode(response)
 }
@@ -456,6 +492,7 @@ func (s *streamState) consume(w io.Writer, payload []byte) error {
 	if err := dec.Decode(&obj); err != nil {
 		return fmt.Errorf("decode kiro event: %w", err)
 	}
+	s.applyTokenUsage(obj)
 	if content, ok := obj["content"].(string); ok {
 		if !s.hasActive || s.blocks[s.active].Type != "text" {
 			if err := s.startText(w); err != nil {
@@ -505,6 +542,107 @@ func (s *streamState) consume(w io.Writer, payload []byte) error {
 	return nil
 }
 
+func (s *streamState) applyTokenUsage(obj map[string]any) {
+	if s == nil || len(obj) == 0 {
+		return
+	}
+	raw, ok := obj["tokenUsage"]
+	if !ok {
+		if nested, nestedOK := obj["metadata"].(map[string]any); nestedOK {
+			raw, ok = nested["tokenUsage"]
+		}
+	}
+	usage, ok := raw.(map[string]any)
+	if !ok || len(usage) == 0 {
+		return
+	}
+	if v, ok := parseTokenCount(usage["uncachedInputTokens"]); ok {
+		s.inputTokens = v
+		s.hasUpstreamUsage = true
+	}
+	if v, ok := parseTokenCount(usage["outputTokens"]); ok {
+		s.outputTokens = v
+		s.hasUpstreamUsage = true
+	}
+	if v, ok := parseTokenCount(usage["cacheReadInputTokens"]); ok {
+		s.cacheReadTokens = v
+		s.hasUpstreamUsage = true
+	}
+	if v, ok := parseTokenCount(usage["cacheWriteInputTokens"]); ok {
+		s.cacheWriteTokens = v
+		s.hasUpstreamUsage = true
+	}
+}
+
+func parseTokenCount(value any) (int, bool) {
+	switch v := value.(type) {
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil || n < 0 {
+			return 0, false
+		}
+		return int(n), true
+	case float64:
+		if v < 0 {
+			return 0, false
+		}
+		return int(v), true
+	case int:
+		if v < 0 {
+			return 0, false
+		}
+		return v, true
+	case int64:
+		if v < 0 {
+			return 0, false
+		}
+		return int(v), true
+	default:
+		return 0, false
+	}
+}
+
+func (s *streamState) anthropicUsage() apicompat.AnthropicUsage {
+	return apicompat.AnthropicUsage{
+		InputTokens:              s.finalInputTokens(),
+		OutputTokens:             s.finalOutputTokens(),
+		CacheReadInputTokens:     s.cacheReadTokens,
+		CacheCreationInputTokens: s.cacheWriteTokens,
+	}
+}
+
+func (s *streamState) finalInputTokens() int {
+	if s == nil {
+		return 0
+	}
+	return s.inputTokens
+}
+
+func (s *streamState) finalOutputTokens() int {
+	if s == nil {
+		return 0
+	}
+	if s.hasUpstreamUsage && s.outputTokens > 0 {
+		return s.outputTokens
+	}
+	return s.estimatedOutputTokens()
+}
+
+func (s *streamState) usageEvent() map[string]int {
+	usage := s.anthropicUsage()
+	out := map[string]int{
+		"input_tokens":  usage.InputTokens,
+		"output_tokens": usage.OutputTokens,
+	}
+	if usage.CacheReadInputTokens > 0 {
+		out["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	}
+	if usage.CacheCreationInputTokens > 0 {
+		out["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+	}
+	return out
+}
+
 func (s *streamState) consumeToolInput(w io.Writer, input any) error {
 	fragment := ""
 	switch value := input.(type) {
@@ -547,8 +685,7 @@ func (s *streamState) emitFinish(w io.Writer) error {
 	if err := s.closeBlock(w); err != nil {
 		return err
 	}
-	outputTokens := s.estimatedOutputTokens()
-	if err := writeSSE(w, "message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": s.stopReason, "stop_sequence": nil}, "usage": map[string]int{"output_tokens": outputTokens}}); err != nil {
+	if err := writeSSE(w, "message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": s.stopReason, "stop_sequence": nil}, "usage": s.usageEvent()}); err != nil {
 		return err
 	}
 	return writeSSE(w, "message_stop", map[string]any{"type": "message_stop"})

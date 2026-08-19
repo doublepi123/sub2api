@@ -108,7 +108,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	// 8-11. Authenticate, build and send the platform-specific request.
 	var resp *http.Response
 	if account.Platform == PlatformKiro {
-		resp, err = s.forwardKiroAnthropicResponse(ctx, account, anthropicBody, mappedModel, true)
+		resp, err = s.forwardKiroAnthropicResponse(ctx, account, anthropicBody, mappedModel, true, kiroConversationSeed(parsed))
 	} else {
 		token, tokenType, tokenErr := s.GetAccessToken(ctx, account)
 		if tokenErr != nil {
