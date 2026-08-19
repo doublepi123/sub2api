@@ -853,57 +853,51 @@ const clientSessionStickySeedPrefix = "sess:"
 // GenerateSessionHash 从预解析请求计算粘性会话 hash。
 //
 // 优先级：
-//  1. 显式 header session_id（SessionContext.ClientSessionID）
-//  2. metadata.user_id 内嵌 session
-//  3. 带 cache_control ephemeral 的可缓存前缀
-//  4. session 上下文 + system + 首条 user 消息（会话内稳定，避免每轮换号）
+//  1. 带 cache_control ephemeral 的可缓存前缀（与上游 prompt cache 同源）
+//  2. 显式 header session_id（SessionContext.ClientSessionID，按 API Key 隔离）
+//  3. metadata.user_id 内嵌 session
+//  4. session 上下文 + model + tools + system + 首条 user（会话内稳定，避免每轮换号）
 func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if parsed == nil {
 		return ""
 	}
 
-	// 1. 最高优先级：客户端显式 session_id
+	// 1. 带 cache_control: {type: "ephemeral"} 的内容与上游 prompt cache 同源，
+	// 优先于 header，避免不同 session_id 把同一可缓存前缀拆到不同账号。
+	cacheableContent := s.extractCacheableContent(parsed)
+	if cacheableContent != "" {
+		hash := s.hashContent(cacheableContent)
+		s.logStickyHashSource("cacheable_content", hash, 0)
+		return hash
+	}
+
+	// 2. 客户端显式 session_id。种子必须混入 APIKeyID，否则同 group 下
+	// 不同用户发相同（或低熵）header 会共享一条 Redis sticky 绑定。
 	if parsed.SessionContext != nil {
 		if sid := strings.TrimSpace(parsed.SessionContext.ClientSessionID); sid != "" {
-			hash := s.hashContent(clientSessionStickySeedPrefix + sid)
-			slog.Info("sticky.hash_source",
-				"source", "client_session_id",
-				"hash", hash,
-			)
+			hash := s.hashContent(isolateClientSessionStickySeed(parsed.SessionContext.APIKeyID, sid))
+			s.logStickyHashSource("client_session_id", hash, 0)
 			return hash
 		}
 	}
 
-	// 2. 从 metadata.user_id 提取 session_xxx
+	// 3. 从 metadata.user_id 提取 session_xxx
 	if parsed.MetadataUserID != "" {
 		uid := ParseMetadataUserID(parsed.MetadataUserID)
 		if uid != nil && uid.SessionID != "" {
-			slog.Info("sticky.hash_source",
-				"source", "metadata_user_id",
-				"session_id", uid.SessionID,
-				"device_id", uid.DeviceID,
-				"is_new_format", uid.IsNewFormat,
-			)
+			s.logStickyHashSource("metadata_user_id", uid.SessionID, 0)
 			return uid.SessionID
 		}
-		slog.Info("sticky.hash_metadata_parse_failed",
-			"metadata_user_id", parsed.MetadataUserID,
-			"parsed_nil", uid == nil,
-		)
+		if s != nil && s.debugModelRoutingEnabled() {
+			slog.Debug("sticky.hash_metadata_parse_failed",
+				"metadata_user_id", parsed.MetadataUserID,
+				"parsed_nil", uid == nil,
+			)
+		}
 	}
 
-	// 3. 提取带 cache_control: {type: "ephemeral"} 的内容
-	cacheableContent := s.extractCacheableContent(parsed)
-	if cacheableContent != "" {
-		hash := s.hashContent(cacheableContent)
-		slog.Info("sticky.hash_source",
-			"source", "cacheable_content",
-			"hash", hash,
-		)
-		return hash
-	}
-
-	// 4. fallback: session 上下文 + system + 首条 user（后续 turn 追加消息不改变 hash）
+	// 4. fallback: session 上下文 + model + tools + system + 首条 user
+	// （后续 turn 追加消息不改变 hash）
 	var combined strings.Builder
 	// 混入请求上下文区分因子，避免不同用户相同消息产生相同 hash
 	if parsed.SessionContext != nil {
@@ -914,22 +908,70 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		_, _ = combined.WriteString(strconv.FormatInt(parsed.SessionContext.APIKeyID, 10))
 		_, _ = combined.WriteString("|")
 	}
-	if systemText := extractTextFromSystemRaw(parsed.SystemRaw()); systemText != "" {
-		_, _ = combined.WriteString(systemText)
-	}
-	if !appendFirstUserMessageTextFromRaw(&combined, parsed.MessagesRaw()) {
-		appendResponsesSessionAnchorFromRaw(&combined, parsed.InputRaw())
-	}
+	appendStickyContentAnchor(&combined, parsed)
 	if combined.Len() > 0 {
 		hash := s.hashContent(combined.String())
-		slog.Info("sticky.hash_source",
-			"source", "message_content_fallback",
-			"hash", hash,
-			"content_len", combined.Len(),
-		)
+		s.logStickyHashSource("message_content_fallback", hash, combined.Len())
 		return hash
 	}
 
+	return ""
+}
+
+func isolateClientSessionStickySeed(apiKeyID int64, sid string) string {
+	return clientSessionStickySeedPrefix + strconv.FormatInt(apiKeyID, 10) + ":" + sid
+}
+
+func (s *GatewayService) logStickyHashSource(source, hash string, contentLen int) {
+	if s == nil || !s.debugModelRoutingEnabled() {
+		return
+	}
+	if contentLen > 0 {
+		slog.Debug("sticky.hash_source", "source", source, "hash", hash, "content_len", contentLen)
+		return
+	}
+	slog.Debug("sticky.hash_source", "source", source, "hash", hash)
+}
+
+// appendStickyContentAnchor writes turn-stable request fields that distinguish
+// otherwise identical first-user prompts (model / tools / system / first user).
+func appendStickyContentAnchor(builder *strings.Builder, parsed *ParsedRequest) {
+	if builder == nil || parsed == nil {
+		return
+	}
+	if model := strings.TrimSpace(parsed.Model); model != "" {
+		_, _ = builder.WriteString("model:")
+		_, _ = builder.WriteString(model)
+		_, _ = builder.WriteString("|")
+	}
+	if tools := extractStickyToolsAnchor(parsed.Body); tools != "" {
+		_, _ = builder.WriteString("tools:")
+		_, _ = builder.WriteString(tools)
+		_, _ = builder.WriteString("|")
+	}
+	if systemText := extractTextFromSystemRaw(parsed.SystemRaw()); systemText != "" {
+		_, _ = builder.WriteString(systemText)
+	}
+	if !appendFirstUserMessageTextFromRaw(builder, parsed.MessagesRaw()) {
+		appendResponsesSessionAnchorFromRaw(builder, parsed.InputRaw())
+	}
+}
+
+func extractStickyToolsAnchor(body *RequestBodyRef) string {
+	if body == nil {
+		return ""
+	}
+	raw := body.Bytes()
+	if len(raw) == 0 {
+		return ""
+	}
+	root := parseRawJSONView(raw)
+	if tools := root.Get("tools"); tools.Exists() {
+		return tools.Raw
+	}
+	if functions := root.Get("functions"); functions.Exists() {
+		return functions.Raw
+	}
 	return ""
 }
 

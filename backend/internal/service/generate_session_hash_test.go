@@ -92,7 +92,7 @@ func TestGenerateSessionHash_MetadataHasHighestPriority(t *testing.T) {
 	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", hash, "metadata session_id should beat content fallback")
 }
 
-func TestGenerateSessionHash_ClientSessionIDHasHighestPriority(t *testing.T) {
+func TestGenerateSessionHash_ClientSessionIDBeatsMetadata(t *testing.T) {
 	svc := &GatewayService{}
 	metadata := "user_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2_account__session_123e4567-e89b-12d3-a456-426614174000"
 	parsed := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, metadata), &SessionContext{
@@ -103,8 +103,29 @@ func TestGenerateSessionHash_ClientSessionIDHasHighestPriority(t *testing.T) {
 	})
 
 	hash := svc.GenerateSessionHash(parsed)
-	require.Equal(t, svc.hashContent(clientSessionStickySeedPrefix+"conv-explicit-1"), hash)
+	require.Equal(t, svc.hashContent(isolateClientSessionStickySeed(1, "conv-explicit-1")), hash)
 	require.NotEqual(t, "123e4567-e89b-12d3-a456-426614174000", hash)
+}
+
+func TestGenerateSessionHash_ClientSessionIDIsolatesAPIKeys(t *testing.T) {
+	svc := &GatewayService{}
+	body := anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, "")
+	a := mustParseSessionHashRequest(t, body, &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 1, ClientSessionID: "shared-sid"})
+	b := mustParseSessionHashRequest(t, body, &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 2, ClientSessionID: "shared-sid"})
+
+	require.NotEqual(t, svc.GenerateSessionHash(a), svc.GenerateSessionHash(b), "same session_id under different API keys must not share a sticky hash")
+}
+
+func TestGenerateSessionHash_CacheControlBeatsClientSessionID(t *testing.T) {
+	svc := &GatewayService{}
+	body := `{"system":[{"type":"text","text":"stable cache anchor","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hello"}]}`
+	withHeader := mustParseSessionHashRequest(t, body, &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 1, ClientSessionID: "conv-a"})
+	otherHeader := mustParseSessionHashRequest(t, body, &SessionContext{ClientIP: "9.8.7.6", UserAgent: "other", APIKeyID: 2, ClientSessionID: "conv-b"})
+
+	h1 := svc.GenerateSessionHash(withHeader)
+	h2 := svc.GenerateSessionHash(otherHeader)
+	require.NotEmpty(t, h1)
+	require.Equal(t, h1, h2, "ephemeral cache prefix must keep accounts pinned across different session headers")
 }
 
 func TestGenerateSessionHash_ClientSessionIDStableAcrossTurns(t *testing.T) {
@@ -507,6 +528,19 @@ func TestGenerateSessionHash_CacheControlOverridesSessionContext(t *testing.T) {
 	require.Equal(t, h1, h2, "cache_control ephemeral has higher priority, SessionContext should not affect result")
 }
 
+func TestGenerateSessionHash_FallbackIncludesModelAndTools(t *testing.T) {
+	svc := &GatewayService{}
+	ctx := &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 1}
+	base := mustParseSessionHashRequest(t, `{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hello"}]}`, ctx)
+	otherModel := mustParseSessionHashRequest(t, `{"model":"claude-opus-4","messages":[{"role":"user","content":"hello"}]}`, ctx)
+	withTools := mustParseSessionHashRequest(t, `{"model":"claude-sonnet-4","tools":[{"name":"read_file"}],"messages":[{"role":"user","content":"hello"}]}`, ctx)
+
+	hBase := svc.GenerateSessionHash(base)
+	require.NotEmpty(t, hBase)
+	require.NotEqual(t, hBase, svc.GenerateSessionHash(otherModel), "different models with the same first user turn must not share a sticky hash")
+	require.NotEqual(t, hBase, svc.GenerateSessionHash(withTools), "different tools with the same first user turn must not share a sticky hash")
+}
+
 func TestGenerateSessionHash_EmptyMessages(t *testing.T) {
 	svc := &GatewayService{}
 	parsed := mustParseSessionHashRequest(t, anthropicSessionBody(nil, []any{}, ""), &SessionContext{ClientIP: "1.1.1.1", UserAgent: "test", APIKeyID: 1})
@@ -638,6 +672,15 @@ func TestGenerateSessionHash_GeminiNonTextPartsIgnored(t *testing.T) {
 
 	h := svc.GenerateSessionHash(parsed)
 	require.NotEmpty(t, h, "Gemini message with mixed parts should still produce a hash from text parts")
+}
+
+func TestGenerateSessionHash_GeminiSkipsLeadingModelRole(t *testing.T) {
+	svc := &GatewayService{}
+	ctx := &SessionContext{ClientIP: "10.0.0.1", UserAgent: "gemini-cli", APIKeyID: 42}
+	withLeadingModel := mustParseGeminiSessionHashRequest(t, geminiSessionBody(nil, []any{geminiMsg("model", "ignored preamble"), geminiMsg("user", "hello")}), ctx)
+	userOnly := mustParseGeminiSessionHashRequest(t, geminiSessionBody(nil, []any{geminiMsg("user", "hello")}), ctx)
+
+	require.Equal(t, svc.GenerateSessionHash(userOnly), svc.GenerateSessionHash(withLeadingModel), "Gemini sticky hash must skip leading model turns and pin to the first user text")
 }
 
 func TestGenerateSessionHash_GeminiMultiTurnHashSticky(t *testing.T) {

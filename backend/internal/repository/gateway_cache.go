@@ -15,7 +15,13 @@ import (
 )
 
 const stickySessionPrefix = "sticky_session:"
+const stickySessionBoundAtPrefix = "sticky_session_bound_at:"
 const liveCallPrefix = "live:call:"
+
+// stickySessionMaxAgeCaps how long a sliding-TTL binding may live from first
+// write. RefreshSessionTTL extends idle expiry but never this absolute age, so
+// a long conversation cannot pin one account indefinitely.
+const stickySessionMaxAge = time.Hour
 
 type gatewayCache struct {
 	rdb *redis.Client
@@ -31,8 +37,18 @@ func buildSessionKey(groupID int64, sessionHash string) string {
 	return fmt.Sprintf("%s%d:%s", stickySessionPrefix, groupID, sessionHash)
 }
 
+func buildSessionBoundAtKey(groupID int64, sessionHash string) string {
+	return fmt.Sprintf("%s%d:%s", stickySessionBoundAtPrefix, groupID, sessionHash)
+}
+
 func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
 	key := buildSessionKey(groupID, sessionHash)
+	if expired, err := c.stickyBindingPastMaxAge(ctx, groupID, sessionHash); err != nil {
+		return 0, err
+	} else if expired {
+		_ = c.DeleteSessionAccountID(ctx, groupID, sessionHash)
+		return 0, service.ErrStickySessionNotFound
+	}
 	accountID, err := c.rdb.Get(ctx, key).Int64()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
@@ -45,12 +61,32 @@ func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, s
 
 func (c *gatewayCache) SetSessionAccountID(ctx context.Context, groupID int64, sessionHash string, accountID int64, ttl time.Duration) error {
 	key := buildSessionKey(groupID, sessionHash)
-	return c.rdb.Set(ctx, key, accountID, ttl).Err()
+	if err := c.rdb.Set(ctx, key, accountID, ttl).Err(); err != nil {
+		return err
+	}
+	// NX: keep the original bind timestamp across later Set/Refresh so the
+	// absolute age is measured from first write, not last write.
+	boundAtTTL := stickySessionMaxAge + ttl
+	if err := c.rdb.SetNX(ctx, buildSessionBoundAtKey(groupID, sessionHash), time.Now().Unix(), boundAtTTL).Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, sessionHash string, ttl time.Duration) error {
+	if expired, err := c.stickyBindingPastMaxAge(ctx, groupID, sessionHash); err != nil {
+		return err
+	} else if expired {
+		return c.DeleteSessionAccountID(ctx, groupID, sessionHash)
+	}
 	key := buildSessionKey(groupID, sessionHash)
-	return c.rdb.Expire(ctx, key, ttl).Err()
+	if err := c.rdb.Expire(ctx, key, ttl).Err(); err != nil {
+		return err
+	}
+	// Keep the birth key alive at least as long as the binding plus the
+	// remaining max-age window so a later Get can still enforce the cap.
+	_ = c.rdb.Expire(ctx, buildSessionBoundAtKey(groupID, sessionHash), stickySessionMaxAge+ttl).Err()
+	return nil
 }
 
 // DeleteSessionAccountID 删除粘性会话与账号的绑定关系。
@@ -61,8 +97,29 @@ func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, ses
 // Called when the bound account becomes unavailable (e.g., error status, disabled,
 // or unschedulable), allowing subsequent requests to select a new available account.
 func (c *gatewayCache) DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error {
-	key := buildSessionKey(groupID, sessionHash)
-	return c.rdb.Del(ctx, key).Err()
+	return c.rdb.Del(ctx, buildSessionKey(groupID, sessionHash), buildSessionBoundAtKey(groupID, sessionHash)).Err()
+}
+
+func (c *gatewayCache) stickyBindingPastMaxAge(ctx context.Context, groupID int64, sessionHash string) (bool, error) {
+	raw, err := c.rdb.Get(ctx, buildSessionBoundAtKey(groupID, sessionHash)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			// Legacy bindings written before the birth-key existed have no
+			// absolute age; treat them as still valid until they expire or
+			// are rewritten.
+			return false, nil
+		}
+		return false, err
+	}
+	return stickyBindingUnixPastMaxAge(raw, time.Now(), stickySessionMaxAge), nil
+}
+
+func stickyBindingUnixPastMaxAge(raw string, now time.Time, maxAge time.Duration) bool {
+	boundAt, parseErr := strconv.ParseInt(raw, 10, 64)
+	if parseErr != nil || boundAt <= 0 || maxAge <= 0 {
+		return false
+	}
+	return !now.Before(time.Unix(boundAt, 0).Add(maxAge))
 }
 
 const (
