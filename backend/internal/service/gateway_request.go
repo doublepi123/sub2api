@@ -44,12 +44,13 @@ var (
 )
 
 // SessionContext 粘性会话上下文，用于区分不同来源的请求。
-// 仅在 GenerateSessionHash 第 3 级 fallback（消息内容 hash）时混入，
-// 避免不同用户发送相同消息产生相同 hash 导致账号集中。
+// ClientSessionID 是显式会话键（header session_id 等），命中时直接决定粘性账号。
+// 其余字段仅在内容回退路径混入，避免不同用户发送相同消息产生相同 hash。
 type SessionContext struct {
-	ClientIP  string
-	UserAgent string
-	APIKeyID  int64
+	ClientIP        string
+	UserAgent       string
+	APIKeyID        int64
+	ClientSessionID string
 }
 
 type jsonRange struct {

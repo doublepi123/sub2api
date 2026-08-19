@@ -89,7 +89,40 @@ func TestGenerateSessionHash_MetadataHasHighestPriority(t *testing.T) {
 	parsed := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, metadata), nil)
 
 	hash := svc.GenerateSessionHash(parsed)
-	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", hash, "metadata session_id should have highest priority")
+	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", hash, "metadata session_id should beat content fallback")
+}
+
+func TestGenerateSessionHash_ClientSessionIDHasHighestPriority(t *testing.T) {
+	svc := &GatewayService{}
+	metadata := "user_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2_account__session_123e4567-e89b-12d3-a456-426614174000"
+	parsed := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, metadata), &SessionContext{
+		ClientIP:        "1.2.3.4",
+		UserAgent:       "test",
+		APIKeyID:        1,
+		ClientSessionID: "conv-explicit-1",
+	})
+
+	hash := svc.GenerateSessionHash(parsed)
+	require.Equal(t, svc.hashContent(clientSessionStickySeedPrefix+"conv-explicit-1"), hash)
+	require.NotEqual(t, "123e4567-e89b-12d3-a456-426614174000", hash)
+}
+
+func TestGenerateSessionHash_ClientSessionIDStableAcrossTurns(t *testing.T) {
+	svc := &GatewayService{}
+	ctx := &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 1, ClientSessionID: "conv-stable"}
+	round1 := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, ""), ctx)
+	round2 := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello"), msg("assistant", "Hi"), msg("user", "next")}, ""), ctx)
+
+	require.Equal(t, svc.GenerateSessionHash(round1), svc.GenerateSessionHash(round2))
+}
+
+func TestGenerateSessionHash_DifferentClientSessionIDsDiffer(t *testing.T) {
+	svc := &GatewayService{}
+	body := anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, "")
+	a := mustParseSessionHashRequest(t, body, &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 1, ClientSessionID: "conv-a"})
+	b := mustParseSessionHashRequest(t, body, &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 1, ClientSessionID: "conv-b"})
+
+	require.NotEqual(t, svc.GenerateSessionHash(a), svc.GenerateSessionHash(b))
 }
 
 func TestGenerateSessionHash_SystemPlusMessages(t *testing.T) {
@@ -182,7 +215,7 @@ func TestGenerateSessionHash_MetadataJSON_HasHighestPriority(t *testing.T) {
 	parsed := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, metadata), nil)
 
 	hash := svc.GenerateSessionHash(parsed)
-	require.Equal(t, "c72554f2-1234-5678-abcd-123456789abc", hash, "JSON format metadata session_id should have highest priority")
+	require.Equal(t, "c72554f2-1234-5678-abcd-123456789abc", hash, "JSON format metadata session_id should beat content fallback")
 }
 
 func TestGenerateSessionHash_NilSessionContextBackwardCompatible(t *testing.T) {
@@ -196,7 +229,7 @@ func TestGenerateSessionHash_NilSessionContextBackwardCompatible(t *testing.T) {
 	require.Equal(t, h1, h2, "nil SessionContext should produce same hash as no SessionContext")
 }
 
-func TestGenerateSessionHash_ContinuousConversation_HashChangesWithMessages(t *testing.T) {
+func TestGenerateSessionHash_ContinuousConversation_HashStableAcrossTurns(t *testing.T) {
 	svc := &GatewayService{}
 	ctx := &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 1}
 	round1 := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, ""), ctx)
@@ -207,11 +240,8 @@ func TestGenerateSessionHash_ContinuousConversation_HashChangesWithMessages(t *t
 	h2 := svc.GenerateSessionHash(round2)
 	h3 := svc.GenerateSessionHash(round3)
 	require.NotEmpty(t, h1)
-	require.NotEmpty(t, h2)
-	require.NotEmpty(t, h3)
-	require.NotEqual(t, h1, h2, "different conversation rounds should produce different hashes")
-	require.NotEqual(t, h2, h3, "each new round should produce a different hash")
-	require.NotEqual(t, h1, h3, "round 1 and round 3 should differ")
+	require.Equal(t, h1, h2, "later turns must keep the first-user sticky hash")
+	require.Equal(t, h1, h3, "later turns must keep the first-user sticky hash")
 }
 
 func TestGenerateSessionHash_ContinuousConversation_SameRoundSameHash(t *testing.T) {
@@ -287,7 +317,7 @@ func TestGenerateSessionHash_MessageRollback(t *testing.T) {
 
 	hOrig := svc.GenerateSessionHash(original)
 	hRollback := svc.GenerateSessionHash(rollback)
-	require.NotEqual(t, hOrig, hRollback, "rollback with different last message should produce different hash")
+	require.Equal(t, hOrig, hRollback, "later-message rollback must not change the first-user sticky hash")
 }
 
 func TestGenerateSessionHash_MessageRollbackSameContent(t *testing.T) {
@@ -410,7 +440,7 @@ func TestGenerateSessionHash_SameUserGrowingConversation(t *testing.T) {
 		h := svc.GenerateSessionHash(parsed)
 		require.NotEmpty(t, h, "round %d hash should not be empty", round)
 		if prevHash != "" {
-			require.NotEqual(t, prevHash, h, "round %d hash should differ from previous round", round)
+			require.Equal(t, prevHash, h, "round %d hash should stay pinned to the first user turn", round)
 		}
 		prevHash = h
 		h2 := svc.GenerateSessionHash(parsed)
@@ -427,7 +457,11 @@ func TestGenerateSessionHash_MultipleUserMessages(t *testing.T) {
 
 	parsed2 := mustParseSessionHashRequest(t, anthropicSessionBody(nil, []any{msg("user", "first"), msg("user", "CHANGED"), msg("user", "third"), msg("user", "fourth"), msg("user", "fifth")}, ""), ctx)
 	h2 := svc.GenerateSessionHash(parsed2)
-	require.NotEqual(t, h, h2, "changing any message should change the hash")
+	require.Equal(t, h, h2, "later user turns must not change the first-user sticky hash")
+
+	parsed3 := mustParseSessionHashRequest(t, anthropicSessionBody(nil, []any{msg("user", "CHANGED"), msg("user", "second"), msg("user", "third"), msg("user", "fourth"), msg("user", "fifth")}, ""), ctx)
+	h3 := svc.GenerateSessionHash(parsed3)
+	require.NotEqual(t, h, h3, "changing the first user turn should change the hash")
 }
 
 func TestGenerateSessionHash_MessageOrderMatters(t *testing.T) {
@@ -438,7 +472,7 @@ func TestGenerateSessionHash_MessageOrderMatters(t *testing.T) {
 
 	h1 := svc.GenerateSessionHash(parsed1)
 	h2 := svc.GenerateSessionHash(parsed2)
-	require.NotEqual(t, h1, h2, "message order should affect the hash")
+	require.NotEqual(t, h1, h2, "first user turn order should affect the hash")
 }
 
 func TestGenerateSessionHash_StructuredContent(t *testing.T) {
@@ -516,7 +550,7 @@ func TestGenerateSessionHash_LongConversation(t *testing.T) {
 	moreMessages := append(append([]any{}, messages...), msg("user", "one more"), msg("assistant", "ok"))
 	parsed2 := mustParseSessionHashRequest(t, anthropicSessionBody("System prompt", moreMessages, ""), ctx)
 	h2 := svc.GenerateSessionHash(parsed2)
-	require.NotEqual(t, h, h2, "adding more messages to long conversation should change hash")
+	require.Equal(t, h, h2, "adding later turns to a long conversation must keep the first-user sticky hash")
 }
 
 func TestGenerateSessionHash_GeminiContentsProducesHash(t *testing.T) {
@@ -559,7 +593,7 @@ func TestGenerateSessionHash_GeminiMultiTurnHashChanges(t *testing.T) {
 	h2 := svc.GenerateSessionHash(round2)
 	require.NotEmpty(t, h1)
 	require.NotEmpty(t, h2)
-	require.NotEqual(t, h1, h2, "Gemini multi-turn should produce different hashes per round")
+	require.Equal(t, h1, h2, "Gemini later turns must keep the first-user sticky hash")
 }
 
 func TestGenerateSessionHash_GeminiDifferentUsersSameContentDifferentHash(t *testing.T) {
@@ -606,7 +640,7 @@ func TestGenerateSessionHash_GeminiNonTextPartsIgnored(t *testing.T) {
 	require.NotEmpty(t, h, "Gemini message with mixed parts should still produce a hash from text parts")
 }
 
-func TestGenerateSessionHash_GeminiMultiTurnHashNotSticky(t *testing.T) {
+func TestGenerateSessionHash_GeminiMultiTurnHashSticky(t *testing.T) {
 	svc := &GatewayService{}
 	ctx := &SessionContext{ClientIP: "10.0.0.1", UserAgent: "gemini-cli", APIKeyID: 42}
 	rounds := []string{
@@ -621,9 +655,9 @@ func TestGenerateSessionHash_GeminiMultiTurnHashNotSticky(t *testing.T) {
 		hashes[i] = svc.GenerateSessionHash(parsed)
 		require.NotEmpty(t, hashes[i], "round %d hash should not be empty", i+1)
 	}
-	require.NotEqual(t, hashes[0], hashes[1], "round 1 vs 2 hash should differ (contents grow)")
-	require.NotEqual(t, hashes[1], hashes[2], "round 2 vs 3 hash should differ (contents grow)")
-	require.NotEqual(t, hashes[0], hashes[2], "round 1 vs 3 hash should differ")
+	require.Equal(t, hashes[0], hashes[1], "Gemini later turns must keep the first-user sticky hash")
+	require.Equal(t, hashes[1], hashes[2], "Gemini later turns must keep the first-user sticky hash")
+	require.Equal(t, hashes[0], hashes[2], "Gemini later turns must keep the first-user sticky hash")
 
 	parsedAgain := mustParseGeminiSessionHashRequest(t, rounds[1], ctx)
 	h2Again := svc.GenerateSessionHash(parsedAgain)

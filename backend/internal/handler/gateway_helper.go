@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -18,6 +19,21 @@ import (
 
 // claudeCodeValidator is a singleton validator for Claude Code client detection
 var claudeCodeValidator = service.NewClaudeCodeValidator()
+
+// attachGatewaySessionContext fills the sticky-session discriminator used by
+// GenerateSessionHash. ClientSessionID is the explicit header session_id when
+// present; IP/UA/APIKey still isolate content-fallback hashes across clients.
+func attachGatewaySessionContext(c *gin.Context, parsedReq *service.ParsedRequest, apiKey *service.APIKey) {
+	if c == nil || parsedReq == nil || apiKey == nil {
+		return
+	}
+	parsedReq.SessionContext = &service.SessionContext{
+		ClientIP:        ip.GetClientIP(c),
+		UserAgent:       c.GetHeader("User-Agent"),
+		APIKeyID:        apiKey.ID,
+		ClientSessionID: service.ExtractClientSessionID(c),
+	}
+}
 
 // SetClaudeCodeClientContext 检查请求是否来自 Claude Code 客户端，并设置到 context 中
 // 返回更新后的 context

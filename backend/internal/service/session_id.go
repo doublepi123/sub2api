@@ -21,13 +21,14 @@ var clientSessionIDHeaders = append(
 )
 
 // ExtractClientSessionID resolves the explicit client-provided session identifier from
-// request headers for usage-log correlation and returns it sanitized. It is
-// protocol-agnostic and shared by every gateway handler so all supported protocols
-// record session_id through one seam. Returns "" when no valid identifier is present.
+// request headers and returns it sanitized. It is protocol-agnostic and shared by
+// every gateway handler so all supported protocols record session_id through one seam.
+// Returns "" when no valid identifier is present.
 //
-// This value feeds only usage_logs.session_id persistence. It does NOT affect sticky
-// routing, account selection, request_id semantics, or upstream prompt caching, which
-// keep their own (intentionally broader) session-signal resolution.
+// Callers persist this value on usage_logs.session_id and, when present, also use it
+// as the GatewayService sticky-session key so the same conversation stays on one
+// upstream account. OpenAI scheduling still resolves its own (broader) header/body
+// signals independently.
 func ExtractClientSessionID(c *gin.Context) string {
 	if c == nil || c.Request == nil {
 		return ""

@@ -148,11 +148,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	if parsedReq == nil {
 		parsedReq = &service.ParsedRequest{Model: reqModel, Stream: reqStream, Body: bodyRef}
 	}
-	parsedReq.SessionContext = &service.SessionContext{
-		ClientIP:  ip.GetClientIP(c),
-		UserAgent: c.GetHeader("User-Agent"),
-		APIKeyID:  apiKey.ID,
-	}
+	attachGatewaySessionContext(c, parsedReq, apiKey)
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
 	groupPlatform := effectiveAPIKeyPlatform(c, apiKey)
 	selectionSessionHash := sessionHash

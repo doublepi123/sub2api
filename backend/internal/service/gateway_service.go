@@ -848,13 +848,33 @@ func NewGatewayService(
 	return svc
 }
 
-// GenerateSessionHash 从预解析请求计算粘性会话 hash
+const clientSessionStickySeedPrefix = "sess:"
+
+// GenerateSessionHash 从预解析请求计算粘性会话 hash。
+//
+// 优先级：
+//  1. 显式 header session_id（SessionContext.ClientSessionID）
+//  2. metadata.user_id 内嵌 session
+//  3. 带 cache_control ephemeral 的可缓存前缀
+//  4. session 上下文 + system + 首条 user 消息（会话内稳定，避免每轮换号）
 func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if parsed == nil {
 		return ""
 	}
 
-	// 1. 最高优先级：从 metadata.user_id 提取 session_xxx
+	// 1. 最高优先级：客户端显式 session_id
+	if parsed.SessionContext != nil {
+		if sid := strings.TrimSpace(parsed.SessionContext.ClientSessionID); sid != "" {
+			hash := s.hashContent(clientSessionStickySeedPrefix + sid)
+			slog.Info("sticky.hash_source",
+				"source", "client_session_id",
+				"hash", hash,
+			)
+			return hash
+		}
+	}
+
+	// 2. 从 metadata.user_id 提取 session_xxx
 	if parsed.MetadataUserID != "" {
 		uid := ParseMetadataUserID(parsed.MetadataUserID)
 		if uid != nil && uid.SessionID != "" {
@@ -872,7 +892,7 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		)
 	}
 
-	// 2. 提取带 cache_control: {type: "ephemeral"} 的内容
+	// 3. 提取带 cache_control: {type: "ephemeral"} 的内容
 	cacheableContent := s.extractCacheableContent(parsed)
 	if cacheableContent != "" {
 		hash := s.hashContent(cacheableContent)
@@ -883,7 +903,7 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		return hash
 	}
 
-	// 3. 最后 fallback: 使用 session上下文 + system + 所有消息的完整摘要串
+	// 4. fallback: session 上下文 + system + 首条 user（后续 turn 追加消息不改变 hash）
 	var combined strings.Builder
 	// 混入请求上下文区分因子，避免不同用户相同消息产生相同 hash
 	if parsed.SessionContext != nil {
@@ -897,9 +917,7 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if systemText := extractTextFromSystemRaw(parsed.SystemRaw()); systemText != "" {
 		_, _ = combined.WriteString(systemText)
 	}
-	contentStart := combined.Len()
-	appendMessageTextsFromRaw(&combined, parsed.MessagesRaw())
-	if combined.Len() == contentStart {
+	if !appendFirstUserMessageTextFromRaw(&combined, parsed.MessagesRaw()) {
 		appendResponsesSessionAnchorFromRaw(&combined, parsed.InputRaw())
 	}
 	if combined.Len() > 0 {
@@ -1070,27 +1088,57 @@ func extractTextFromContentRaw(content gjson.Result) string {
 	return ""
 }
 
-func appendMessageTextsFromRaw(builder *strings.Builder, raw []byte) {
+// appendFirstUserMessageTextFromRaw writes only the first user/user-role turn.
+// Later turns must not change the sticky key, otherwise each agent round looks
+// like a new session and the scheduler rotates accounts (losing prefix cache).
+func appendFirstUserMessageTextFromRaw(builder *strings.Builder, raw []byte) bool {
 	if builder == nil || len(raw) == 0 {
-		return
+		return false
 	}
 	messages := parseRawJSONView(raw)
 	if !messages.IsArray() {
-		return
+		return false
 	}
+	found := false
 	messages.ForEach(func(_, msg gjson.Result) bool {
-		if content := msg.Get("content"); content.Exists() {
-			_, _ = builder.WriteString(extractTextFromContentRaw(content))
+		if !isStickySessionUserRole(msg.Get("role").String()) {
 			return true
 		}
-		parts := msg.Get("parts")
-		if parts.IsArray() {
-			parts.ForEach(func(_, part gjson.Result) bool {
-				if text := part.Get("text").String(); text != "" {
-					_, _ = builder.WriteString(text)
-				}
-				return true
-			})
+		before := builder.Len()
+		appendMessageTextFromRaw(builder, msg)
+		if builder.Len() > before {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func isStickySessionUserRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "", "user":
+		return true
+	default:
+		return false
+	}
+}
+
+func appendMessageTextFromRaw(builder *strings.Builder, msg gjson.Result) {
+	if builder == nil {
+		return
+	}
+	if content := msg.Get("content"); content.Exists() {
+		_, _ = builder.WriteString(extractTextFromContentRaw(content))
+		return
+	}
+	parts := msg.Get("parts")
+	if !parts.IsArray() {
+		return
+	}
+	parts.ForEach(func(_, part gjson.Result) bool {
+		if text := part.Get("text").String(); text != "" {
+			_, _ = builder.WriteString(text)
 		}
 		return true
 	})

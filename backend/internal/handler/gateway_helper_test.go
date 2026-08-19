@@ -2,11 +2,15 @@ package handler
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -143,6 +147,30 @@ func TestWrapReleaseOnDone_ConcurrentCalls(t *testing.T) {
 	if count := atomic.LoadInt32(&releaseCount); count != 1 {
 		t.Errorf("expected release count to be 1, got %d", count)
 	}
+}
+
+func TestAttachGatewaySessionContext_ReadsClientSessionID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("session_id", "conv-from-header")
+	req.Header.Set("User-Agent", "test-agent")
+	c.Request = req
+
+	parsed := &service.ParsedRequest{}
+	attachGatewaySessionContext(c, parsed, &service.APIKey{ID: 42})
+
+	require.NotNil(t, parsed.SessionContext)
+	require.Equal(t, int64(42), parsed.SessionContext.APIKeyID)
+	require.Equal(t, "test-agent", parsed.SessionContext.UserAgent)
+	require.Equal(t, "conv-from-header", parsed.SessionContext.ClientSessionID)
+}
+
+func TestAttachGatewaySessionContext_NilSafe(t *testing.T) {
+	attachGatewaySessionContext(nil, nil, nil)
+	parsed := &service.ParsedRequest{}
+	attachGatewaySessionContext(nil, parsed, &service.APIKey{ID: 1})
+	require.Nil(t, parsed.SessionContext)
 }
 
 // BenchmarkWrapReleaseOnDone 性能基准测试
