@@ -36,8 +36,28 @@ var Models = []string{
 type turn struct {
 	Role        string
 	Text        string
+	Images      []map[string]any
 	ToolUses    []map[string]any
 	ToolResults []map[string]any
+}
+
+// RequestBuild is the converted Kiro payload plus metadata needed by the gateway.
+type RequestBuild struct {
+	Payload     []byte
+	InputTokens int
+	ToolNameMap map[string]string
+	Thinking    bool
+	WebSearch   bool
+	SearchQuery string
+}
+
+// TransformOptions controls response conversion. Thinking tags are always
+// parsed so Claude Code can consume standalone thinking blocks.
+type TransformOptions struct {
+	Model       string
+	InputTokens int
+	Stream      bool
+	ToolNameMap map[string]string
 }
 
 func RuntimeURL(region string) string {
@@ -70,32 +90,57 @@ func normalizedRegion(region string) string {
 // pins conversationId/agentContinuationId so the same gateway session can hit
 // Kiro's implicit prompt cache.
 func BuildRequest(body []byte, model, profileARN, conversationSeed string) ([]byte, int, error) {
+	built, err := BuildRequestResult(body, model, profileARN, conversationSeed)
+	if err != nil {
+		return nil, 0, err
+	}
+	return built.Payload, built.InputTokens, nil
+}
+
+func BuildRequestResult(body []byte, model, profileARN, conversationSeed string) (*RequestBuild, error) {
 	var req apicompat.AnthropicRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, 0, fmt.Errorf("decode anthropic request: %w", err)
+		return nil, fmt.Errorf("decode anthropic request: %w", err)
 	}
 	if strings.TrimSpace(model) == "" {
 		model = req.Model
 	}
 	if strings.TrimSpace(model) == "" {
-		return nil, 0, errors.New("kiro model is required")
+		return nil, errors.New("kiro model is required")
 	}
 	if strings.TrimSpace(profileARN) == "" {
 		profileARN = DefaultProfileARN
 	}
 
-	turns, err := convertTurns(req.Messages, len(req.Tools) > 0)
+	turns, err := convertTurns(req.Messages)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	system := extractText(req.System)
+	prefix := generateThinkingPrefix(req)
+	if prefix != "" && !hasThinkingTags(system) {
+		if system != "" {
+			system = prefix + "\n" + system
+		} else {
+			turns = append([]turn{
+				{Role: "user", Text: prefix},
+				{Role: "assistant", Text: "I will follow these instructions."},
+			}, turns...)
+		}
+	}
 	if len(turns) == 0 {
 		turns = append(turns, turn{Role: "user", Text: placeholder})
 	}
+	turns = pairToolTurns(turns)
 	turns = normalizeTurns(turns)
 	if system != "" {
 		turns[0].Text = joinText(system, turns[0].Text)
 	}
+
+	nameMap := map[string]string{}
+	applyToolNameMap(turns, nameMap)
+	tools := convertTools(req.Tools, nameMap)
+	tools = ensurePlaceholderTools(tools, collectHistoryToolNames(turns))
 
 	history := make([]any, 0, len(turns)-1)
 	for _, item := range turns[:len(turns)-1] {
@@ -108,7 +153,7 @@ func BuildRequest(body []byte, model, profileARN, conversationSeed string) ([]by
 	}
 
 	ctx := map[string]any{}
-	if tools := convertTools(req.Tools); len(tools) > 0 {
+	if len(tools) > 0 {
 		ctx["tools"] = tools
 	}
 	if len(current.ToolResults) > 0 {
@@ -118,6 +163,9 @@ func BuildRequest(body []byte, model, profileARN, conversationSeed string) ([]by
 		"content": nonEmpty(current.Text),
 		"modelId": model,
 		"origin":  "AI_EDITOR",
+	}
+	if len(current.Images) > 0 {
+		userInput["images"] = current.Images
 	}
 	if len(ctx) > 0 {
 		userInput["userInputMessageContext"] = ctx
@@ -141,12 +189,19 @@ func BuildRequest(body []byte, model, profileARN, conversationSeed string) ([]by
 		"profileArn":        profileARN,
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("encode kiro request: %w", err)
+		return nil, fmt.Errorf("encode kiro request: %w", err)
 	}
-	return payload, estimateTokens(body), nil
+	return &RequestBuild{
+		Payload:     payload,
+		InputTokens: estimateTokens(body),
+		ToolNameMap: nameMap,
+		Thinking:    prefix != "",
+		WebSearch:   IsStandaloneWebSearch(req.Tools),
+		SearchQuery: ExtractWebSearchQuery(req.Messages),
+	}, nil
 }
 
-func convertTurns(messages []apicompat.AnthropicMessage, keepTools bool) ([]turn, error) {
+func convertTurns(messages []apicompat.AnthropicMessage) ([]turn, error) {
 	result := make([]turn, 0, len(messages))
 	for _, msg := range messages {
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
@@ -163,31 +218,36 @@ func convertTurns(messages []apicompat.AnthropicMessage, keepTools bool) ([]turn
 				return nil, fmt.Errorf("decode %s message content: %w", role, err)
 			}
 			var texts []string
+			var thinkingParts []string
 			for _, block := range blocks {
 				switch block.Type {
 				case "text":
 					if strings.TrimSpace(block.Text) != "" {
 						texts = append(texts, block.Text)
 					}
+				case "thinking":
+					if strings.TrimSpace(block.Thinking) != "" {
+						thinkingParts = append(thinkingParts, block.Thinking)
+					}
+				case "image":
+					if img := convertImage(block.Source); img != nil {
+						item.Images = append(item.Images, img)
+					}
 				case "tool_use":
-					if keepTools {
-						var input any = map[string]any{}
-						if len(block.Input) > 0 {
-							_ = json.Unmarshal(block.Input, &input)
-						}
-						item.ToolUses = append(item.ToolUses, map[string]any{"name": block.Name, "input": input, "toolUseId": block.ID})
+					var input any = map[string]any{}
+					if len(block.Input) > 0 {
+						_ = json.Unmarshal(block.Input, &input)
 					}
+					item.ToolUses = append(item.ToolUses, map[string]any{"name": block.Name, "input": input, "toolUseId": block.ID})
 				case "tool_result":
-					if keepTools {
-						item.ToolResults = append(item.ToolResults, map[string]any{
-							"content":   []map[string]string{{"text": nonEmpty(extractText(block.Content))}},
-							"status":    map[bool]string{true: "error", false: "success"}[block.IsError],
-							"toolUseId": block.ToolUseID,
-						})
-					}
+					item.ToolResults = append(item.ToolResults, map[string]any{
+						"content":   []map[string]string{{"text": nonEmpty(extractText(block.Content))}},
+						"status":    map[bool]string{true: "error", false: "success"}[block.IsError],
+						"toolUseId": block.ToolUseID,
+					})
 				}
 			}
-			item.Text = strings.Join(texts, "\n")
+			item.Text = wrapAssistantThinking(strings.Join(thinkingParts, ""), strings.Join(texts, "\n"), len(item.ToolUses) > 0)
 		}
 		result = append(result, item)
 	}
@@ -207,7 +267,9 @@ func normalizeTurns(input []turn) []turn {
 				merged = append(merged, turn{Role: "user", Text: placeholder})
 			}
 		}
-		item.Text = nonEmpty(item.Text)
+		if strings.TrimSpace(item.Text) == "" && len(item.ToolUses) == 0 && len(item.ToolResults) == 0 && len(item.Images) == 0 {
+			item.Text = placeholder
+		}
 		merged = append(merged, item)
 	}
 	return merged
@@ -215,23 +277,36 @@ func normalizeTurns(input []turn) []turn {
 
 func encodeHistoryTurn(item turn, model string) any {
 	if item.Role == "assistant" {
-		msg := map[string]any{"content": nonEmpty(item.Text)}
+		msg := map[string]any{"content": assistantContent(item)}
 		if len(item.ToolUses) > 0 {
 			msg["toolUses"] = item.ToolUses
 		}
 		return map[string]any{"assistantResponseMessage": msg}
 	}
 	msg := map[string]any{"content": nonEmpty(item.Text), "modelId": model, "origin": "AI_EDITOR"}
+	if len(item.Images) > 0 {
+		msg["images"] = item.Images
+	}
 	if len(item.ToolResults) > 0 {
 		msg["userInputMessageContext"] = map[string]any{"toolResults": item.ToolResults}
 	}
 	return map[string]any{"userInputMessage": msg}
 }
 
-func convertTools(tools []apicompat.AnthropicTool) []any {
+func assistantContent(item turn) string {
+	if len(item.ToolUses) > 0 && strings.TrimSpace(item.Text) == "" {
+		return " "
+	}
+	return nonEmpty(item.Text)
+}
+
+func convertTools(tools []apicompat.AnthropicTool, nameMap map[string]string) []any {
 	result := make([]any, 0, len(tools))
 	for _, tool := range tools {
-		if strings.TrimSpace(tool.Name) == "" || tool.Type != "" {
+		if strings.TrimSpace(tool.Name) == "" {
+			continue
+		}
+		if tool.Type != "" && !isBuiltinKiroTool(tool) {
 			continue
 		}
 		var schema any = map[string]any{"type": "object", "properties": map[string]any{}}
@@ -240,7 +315,9 @@ func convertTools(tools []apicompat.AnthropicTool) []any {
 			schema = sanitizeSchema(schema)
 		}
 		result = append(result, map[string]any{"toolSpecification": map[string]any{
-			"name": tool.Name, "description": tool.Description, "inputSchema": map[string]any{"json": schema},
+			"name":        mapToolName(tool.Name, nameMap),
+			"description": truncateRunesStrict(tool.Description, toolDescriptionMaxLen),
+			"inputSchema": map[string]any{"json": schema},
 		}})
 	}
 	return result
@@ -429,12 +506,22 @@ type streamState struct {
 	hasActive        bool
 	hasTool          bool
 	stopReason       string
+	toolNameMap      map[string]string
+	thinking         thinkingParser
 }
 
 // TransformResponse converts Kiro's AWS event-stream response into either an
 // Anthropic event stream or a buffered Anthropic Messages response.
 func TransformResponse(src io.Reader, dst io.Writer, model string, inputTokens int, stream bool) error {
-	state := &streamState{model: model, id: "msg_" + strings.ReplaceAll(uuid.NewString(), "-", ""), inputTokens: inputTokens}
+	return TransformResponseWithOptions(src, dst, TransformOptions{Model: model, InputTokens: inputTokens, Stream: stream})
+}
+
+func TransformResponseWithOptions(src io.Reader, dst io.Writer, opts TransformOptions) error {
+	state := &streamState{
+		model: opts.Model, id: "msg_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
+		inputTokens: opts.InputTokens, toolNameMap: opts.ToolNameMap,
+	}
+	stream := opts.Stream
 	var buffered bytes.Buffer
 	sink := dst
 	if !stream {
@@ -457,6 +544,9 @@ func TransformResponse(src io.Reader, dst io.Writer, model string, inputTokens i
 		if err := state.consume(sink, msg.Payload); err != nil {
 			return err
 		}
+	}
+	if err := state.flushThinking(sink); err != nil {
+		return err
 	}
 	if state.stopReason == "" {
 		state.stopReason = "end_turn"
@@ -494,21 +584,18 @@ func (s *streamState) consume(w io.Writer, payload []byte) error {
 	}
 	s.applyTokenUsage(obj)
 	if content, ok := obj["content"].(string); ok {
-		if !s.hasActive || s.blocks[s.active].Type != "text" {
-			if err := s.startText(w); err != nil {
-				return err
-			}
-		}
-		s.blocks[s.active].Text += content
-		_, _ = s.outputText.WriteString(content)
-		return writeSSE(w, "content_block_delta", map[string]any{"type": "content_block_delta", "index": s.active, "delta": map[string]any{"type": "text_delta", "text": content}})
+		return s.emitThinkingEvents(w, s.thinking.push(content))
 	}
 	toolEvent := false
 	if name, ok := obj["name"].(string); ok {
+		if err := s.flushThinking(w); err != nil {
+			return err
+		}
 		id, _ := obj["toolUseId"].(string)
 		if id == "" {
 			id = "toolu_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		}
+		name = restoreToolName(name, s.toolNameMap)
 		currentMatches := s.hasActive && s.blocks[s.active].Type == "tool_use" && s.blocks[s.active].ID == id
 		if !currentMatches {
 			if err := s.closeBlock(w); err != nil {
@@ -662,6 +749,68 @@ func (s *streamState) consumeToolInput(w io.Writer, input any) error {
 	return writeSSE(w, "content_block_delta", map[string]any{"type": "content_block_delta", "index": s.active, "delta": map[string]any{"type": "input_json_delta", "partial_json": fragment}})
 }
 
+func (s *streamState) flushThinking(w io.Writer) error {
+	return s.emitThinkingEvents(w, s.thinking.flushBoundary())
+}
+
+func (s *streamState) emitThinkingEvents(w io.Writer, events []thinkingEvent) error {
+	for _, event := range events {
+		switch event.kind {
+		case thinkingEventStart:
+			if err := s.startThinking(w); err != nil {
+				return err
+			}
+		case thinkingEventDelta:
+			if event.text == "" && (!s.hasActive || s.blocks[s.active].Type != "thinking") {
+				continue
+			}
+			if !s.hasActive || s.blocks[s.active].Type != "thinking" {
+				if err := s.startThinking(w); err != nil {
+					return err
+				}
+			}
+			s.blocks[s.active].Thinking += event.text
+			_, _ = s.outputText.WriteString(event.text)
+			if err := writeSSE(w, "content_block_delta", map[string]any{"type": "content_block_delta", "index": s.active, "delta": map[string]any{"type": "thinking_delta", "thinking": event.text}}); err != nil {
+				return err
+			}
+		case thinkingEventStop:
+			if err := s.closeBlock(w); err != nil {
+				return err
+			}
+		case thinkingEventText:
+			if err := s.emitText(w, event.text); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *streamState) emitText(w io.Writer, content string) error {
+	if content == "" {
+		return nil
+	}
+	if !s.hasActive || s.blocks[s.active].Type != "text" {
+		if err := s.startText(w); err != nil {
+			return err
+		}
+	}
+	s.blocks[s.active].Text += content
+	_, _ = s.outputText.WriteString(content)
+	return writeSSE(w, "content_block_delta", map[string]any{"type": "content_block_delta", "index": s.active, "delta": map[string]any{"type": "text_delta", "text": content}})
+}
+
+func (s *streamState) startThinking(w io.Writer) error {
+	if err := s.closeBlock(w); err != nil {
+		return err
+	}
+	s.blocks = append(s.blocks, apicompat.AnthropicContentBlock{Type: "thinking", Thinking: ""})
+	s.active = len(s.blocks) - 1
+	s.hasActive = true
+	return writeSSE(w, "content_block_start", map[string]any{"type": "content_block_start", "index": s.active, "content_block": map[string]any{"type": "thinking", "thinking": ""}})
+}
+
 func (s *streamState) startText(w io.Writer) error {
 	if err := s.closeBlock(w); err != nil {
 		return err
@@ -695,6 +844,7 @@ func (s *streamState) estimatedOutputTokens() int {
 	var output strings.Builder
 	for _, block := range s.blocks {
 		_, _ = output.WriteString(block.Text)
+		_, _ = output.WriteString(block.Thinking)
 		if block.Type == "tool_use" {
 			_, _ = output.WriteString(block.Name)
 			_, _ = output.Write(block.Input)

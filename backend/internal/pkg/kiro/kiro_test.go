@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"io"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -57,6 +58,104 @@ func TestBuildRequestConvertsHistoryToolsAndSanitizesSchema(t *testing.T) {
 	require.NotContains(t, schema, "additionalProperties")
 	require.Regexp(t, uuidV4RE, state["conversationId"])
 	require.Regexp(t, uuidV4RE, state["agentContinuationId"])
+}
+
+func TestBuildRequestInjectsThinkingPrefixAndHistoryThinking(t *testing.T) {
+	body := []byte(`{
+      "model":"claude-haiku-4.5",
+      "thinking":{"type":"enabled","budget_tokens":2048},
+      "system":"be careful",
+      "messages":[
+        {"role":"user","content":"q"},
+        {"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"ok"}]}
+      ]
+    }`)
+	built, err := BuildRequestResult(body, "claude-haiku-4.5", "arn:test", "")
+	require.NoError(t, err)
+	require.True(t, built.Thinking)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(built.Payload, &got))
+	history := requireSlice(t, requireMap(t, got["conversationState"])["history"])
+	first := requireMap(t, requireMap(t, history[0])["userInputMessage"])
+	require.Contains(t, first["content"], "<thinking_mode>enabled</thinking_mode><max_thinking_length>2048</max_thinking_length>")
+	require.Contains(t, first["content"], "be careful")
+	assistant := requireMap(t, requireMap(t, history[1])["assistantResponseMessage"])
+	require.Equal(t, "<thinking>plan</thinking>\n\nok", assistant["content"])
+}
+
+func TestBuildRequestInjectsThinkingPairWithoutSystem(t *testing.T) {
+	body := []byte(`{
+      "model":"claude-haiku-4.5",
+      "thinking":{"type":"adaptive"},
+      "messages":[{"role":"user","content":"hi"}]
+    }`)
+	built, err := BuildRequestResult(body, "claude-haiku-4.5", "arn:test", "")
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(built.Payload, &got))
+	history := requireSlice(t, requireMap(t, got["conversationState"])["history"])
+	require.GreaterOrEqual(t, len(history), 2)
+	user := requireMap(t, requireMap(t, history[0])["userInputMessage"])
+	require.Contains(t, user["content"], "<thinking_mode>adaptive</thinking_mode><thinking_effort>high</thinking_effort>")
+	assistant := requireMap(t, requireMap(t, history[1])["assistantResponseMessage"])
+	require.Equal(t, "I will follow these instructions.", assistant["content"])
+}
+
+func TestBuildRequestConvertsImagesAndKeepsTypedWebSearch(t *testing.T) {
+	body := []byte(`{
+      "model":"claude-haiku-4.5",
+      "messages":[{"role":"user","content":[
+        {"type":"text","text":"describe"},
+        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}},
+        {"type":"image","source":{"type":"base64","media_type":"image/svg+xml","data":"nope"}}
+      ]}],
+      "tools":[{"name":"web_search","type":"web_search_20250305","description":"Search"}]
+    }`)
+	built, err := BuildRequestResult(body, "claude-haiku-4.5", "arn:test", "")
+	require.NoError(t, err)
+	require.True(t, built.WebSearch)
+	require.Equal(t, "describe", built.SearchQuery)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(built.Payload, &got))
+	current := requireMap(t, requireMap(t, requireMap(t, got["conversationState"])["currentMessage"])["userInputMessage"])
+	images := requireSlice(t, current["images"])
+	require.Len(t, images, 1)
+	require.Equal(t, "png", requireMap(t, images[0])["format"])
+	require.Equal(t, map[string]any{"bytes": "abc"}, requireMap(t, images[0])["source"])
+	tools := requireSlice(t, requireMap(t, current["userInputMessageContext"])["tools"])
+	require.Equal(t, "web_search", requireMap(t, requireMap(t, tools[0])["toolSpecification"])["name"])
+}
+
+func TestBuildRequestTruncatesToolNamesAndFillsMissingResults(t *testing.T) {
+	longName := strings.Repeat("lookup", 20)
+	body, err := json.Marshal(map[string]any{
+		"model": "claude-haiku-4.5",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "q"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": "tool_1", "name": longName, "input": map[string]any{"q": "x"}},
+			}},
+			map[string]any{"role": "user", "content": "next"},
+		},
+		"tools": []any{map[string]any{"name": longName, "description": "Lookup"}},
+	})
+	require.NoError(t, err)
+	built, err := BuildRequestResult(body, "claude-haiku-4.5", "arn:test", "")
+	require.NoError(t, err)
+	require.Len(t, built.ToolNameMap, 1)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(built.Payload, &got))
+	state := requireMap(t, got["conversationState"])
+	history := requireSlice(t, state["history"])
+	assistant := requireMap(t, requireMap(t, history[1])["assistantResponseMessage"])
+	uses := requireSlice(t, assistant["toolUses"])
+	shortName := requireMap(t, uses[0])["name"].(string)
+	require.Len(t, shortName, toolNameMaxLen)
+	require.Equal(t, longName, built.ToolNameMap[shortName])
+	current := requireMap(t, requireMap(t, state["currentMessage"])["userInputMessage"])
+	results := requireSlice(t, requireMap(t, current["userInputMessageContext"])["toolResults"])
+	require.Equal(t, "tool_1", requireMap(t, results[0])["toolUseId"])
+	require.Equal(t, placeholder, requireMap(t, requireSlice(t, requireMap(t, results[0])["content"])[0])["text"])
 }
 
 func TestConversationIDFromSeedIsStableAndFormatted(t *testing.T) {
@@ -216,6 +315,47 @@ func TestTransformResponseReadsNestedMetadataUsage(t *testing.T) {
 	require.Contains(t, out.String(), `"output_tokens":3`)
 	require.Contains(t, out.String(), `"cache_read_input_tokens":64`)
 	require.NotContains(t, out.String(), `"cache_creation_input_tokens"`)
+}
+
+func TestTransformResponseSplitsThinkingBlocksAndRestoresToolName(t *testing.T) {
+	events := [][]byte{
+		[]byte(`{"content":"<thinking>\nplan"}`),
+		[]byte(`{"content":"</thinking>\n\nhello"}`),
+		[]byte(`{"name":"lookup_abcdef12","toolUseId":"tool_1","input":{}}`),
+		[]byte(`{"stopReason":"END_TURN"}`),
+	}
+	var source bytes.Buffer
+	for _, event := range events {
+		_, err := source.Write(encodeEvent(t, event))
+		require.NoError(t, err)
+	}
+	var out bytes.Buffer
+	require.NoError(t, TransformResponseWithOptions(&source, &out, TransformOptions{
+		Model: "claude-haiku-4.5", InputTokens: 4, Stream: true,
+		ToolNameMap: map[string]string{"lookup_abcdef12": "lookup-original"},
+	}))
+	stream := out.String()
+	require.Contains(t, stream, `"type":"thinking"`)
+	require.Contains(t, stream, `"type":"thinking_delta"`)
+	require.Contains(t, stream, `"thinking":"plan"`)
+	require.Contains(t, stream, `"text":"hello"`)
+	require.Contains(t, stream, `"name":"lookup-original"`)
+}
+
+func TestTransformResponseBufferedThinkingJSON(t *testing.T) {
+	var source bytes.Buffer
+	_, err := source.Write(encodeEvent(t, []byte(`{"content":"<thinking>\nsecret</thinking>\n\nvisible"}`)))
+	require.NoError(t, err)
+	_, err = source.Write(encodeEvent(t, []byte(`{"stopReason":"END_TURN"}`)))
+	require.NoError(t, err)
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 3, false))
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
+	content := requireSlice(t, response["content"])
+	require.Equal(t, "thinking", requireMap(t, content[0])["type"])
+	require.Equal(t, "secret", requireMap(t, content[0])["thinking"])
+	require.Equal(t, "visible", requireMap(t, content[1])["text"])
 }
 
 func TestTransformResponseIgnoresNegativeUsage(t *testing.T) {
