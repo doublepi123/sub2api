@@ -52,7 +52,7 @@ func TestMigration223TracksConfiguredTimezone(t *testing.T) {
 }
 
 func TestMigration224UsesPublishedRollupTimezone(t *testing.T) {
-	content, err := FS.ReadFile("224_group_usage_rollup_trigger_timezone.sql")
+	content, err := FS.ReadFile("228_group_usage_rollup_trigger_timezone.sql")
 	require.NoError(t, err)
 
 	sql := string(content)
