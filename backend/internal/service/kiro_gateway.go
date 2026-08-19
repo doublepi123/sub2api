@@ -131,16 +131,20 @@ func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, accoun
 // binary response; stream controls only the synthetic response format.
 func (s *GatewayService) forwardKiroAnthropicResponse(ctx context.Context, account *Account, anthropicBody []byte, mappedModel string, stream bool, conversationSeed string) (*http.Response, error) {
 	profileARN := strings.TrimSpace(account.GetCredential("profile_arn"))
-	payload, inputTokens, err := kiro.BuildRequest(anthropicBody, mappedModel, profileARN, conversationSeed)
+	built, err := kiro.BuildRequestResult(anthropicBody, mappedModel, profileARN, conversationSeed)
 	if err != nil {
 		return nil, err
+	}
+
+	if built.WebSearch {
+		return s.forwardKiroWebSearch(ctx, account, built, mappedModel, stream)
 	}
 
 	accessToken, err := s.kiroAccessToken(ctx, account, false)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.sendKiroRequest(ctx, account, payload, accessToken)
+	resp, err := s.sendKiroRequest(ctx, account, built.Payload, accessToken)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +154,7 @@ func (s *GatewayService) forwardKiroAnthropicResponse(ctx context.Context, accou
 		if err != nil {
 			return nil, err
 		}
-		resp, err = s.sendKiroRequest(ctx, account, payload, accessToken)
+		resp, err = s.sendKiroRequest(ctx, account, built.Payload, accessToken)
 		if err != nil {
 			return nil, err
 		}
@@ -171,10 +175,78 @@ func (s *GatewayService) forwardKiroAnthropicResponse(ctx context.Context, accou
 	reader, writer := io.Pipe()
 	go func() {
 		defer func() { _ = resp.Body.Close() }()
-		err := kiro.TransformResponse(resp.Body, writer, mappedModel, inputTokens, stream)
+		err := kiro.TransformResponseWithOptions(resp.Body, writer, kiro.TransformOptions{
+			Model: mappedModel, InputTokens: built.InputTokens, Stream: stream, ToolNameMap: built.ToolNameMap,
+		})
 		_ = writer.CloseWithError(err)
 	}()
 	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header, Body: reader, Request: resp.Request}, nil
+}
+
+func (s *GatewayService) forwardKiroWebSearch(ctx context.Context, account *Account, built *kiro.RequestBuild, mappedModel string, stream bool) (*http.Response, error) {
+	if strings.TrimSpace(built.SearchQuery) == "" {
+		return nil, errors.New("kiro web search query is required")
+	}
+	accessToken, err := s.kiroAccessToken(ctx, account, false)
+	if err != nil {
+		return nil, err
+	}
+	results, err := s.callKiroWebSearch(ctx, account, accessToken, built.SearchQuery)
+	if err != nil {
+		return nil, err
+	}
+	header := make(http.Header)
+	header.Set("Content-Type", map[bool]string{true: "text/event-stream", false: "application/json"}[stream])
+	reader, writer := io.Pipe()
+	go func() {
+		err := kiro.WriteWebSearchResponse(writer, mappedModel, built.SearchQuery, results, built.InputTokens, stream)
+		_ = writer.CloseWithError(err)
+	}()
+	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header, Body: reader}, nil
+}
+
+func (s *GatewayService) callKiroWebSearch(ctx context.Context, account *Account, accessToken, query string) ([]kiro.WebSearchResult, error) {
+	resp, err := s.sendKiroWebSearchRequest(ctx, account, accessToken, query)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		_ = resp.Body.Close()
+		accessToken, err = s.kiroAccessToken(ctx, account, true)
+		if err != nil {
+			return nil, err
+		}
+		resp, err = s.sendKiroWebSearchRequest(ctx, account, accessToken, query)
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read kiro web search: %w", err)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		// MCP failures degrade to an empty result so Claude Code still gets a
+		// well-formed web_search_tool_result instead of a hard 502.
+		return nil, nil
+	}
+	return kiro.ParseWebSearchMCPResponse(body), nil
+}
+
+func (s *GatewayService) sendKiroWebSearchRequest(ctx context.Context, account *Account, accessToken, query string) (*http.Response, error) {
+	req, err := kiro.NewWebSearchMCPRequest(
+		ctx,
+		account.GetCredential("region"),
+		account.GetCredential("profile_arn"),
+		accessToken,
+		query,
+	)
+	if err != nil {
+		return nil, err
+	}
+	s.applyKiroIDEHeaders(req, account)
+	return s.httpUpstream.DoWithTLS(req, accountProxyURL(account), account.ID, account.Concurrency, s.kiroTLSProfile(account))
 }
 
 func (s *GatewayService) sendKiroRequest(ctx context.Context, account *Account, payload []byte, accessToken string) (*http.Response, error) {
@@ -189,7 +261,21 @@ func (s *GatewayService) sendKiroRequest(ctx context.Context, account *Account, 
 	req.Header.Set("x-amz-target", kiro.RuntimeTarget)
 	req.Header.Set("x-amzn-codewhisperer-optout", "true")
 	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+	s.applyKiroIDEHeaders(req, account)
 	return s.httpUpstream.DoWithTLS(req, accountProxyURL(account), account.ID, account.Concurrency, s.kiroTLSProfile(account))
+}
+
+func (s *GatewayService) applyKiroIDEHeaders(req *http.Request, account *Account) {
+	if req == nil || account == nil {
+		return
+	}
+	machineID := kiro.MachineID(kiro.MachineIDInput{
+		Configured:   account.GetCredential("machine_id"),
+		APIKey:       firstNonEmpty(account.GetCredential("kiro_api_key"), account.GetCredential("api_key")),
+		RefreshToken: account.GetCredential("refresh_token"),
+		AccountID:    account.ID,
+	})
+	kiro.ApplyIDEHeaders(req.Header.Set, machineID)
 }
 
 // FetchKiroUsageLimits queries the same read-only credits endpoint used by the
@@ -248,6 +334,7 @@ func (s *GatewayService) sendKiroUsageLimitsRequest(ctx context.Context, account
 	if err != nil {
 		return nil, err
 	}
+	s.applyKiroIDEHeaders(req, account)
 	return s.httpUpstream.DoWithTLS(req, accountProxyURL(account), account.ID, account.Concurrency, s.kiroTLSProfile(account))
 }
 
@@ -297,6 +384,7 @@ func (s *GatewayService) kiroAccessToken(ctx context.Context, account *Account, 
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	s.applyKiroIDEHeaders(req, account)
 	resp, err := s.httpUpstream.DoWithTLS(req, accountProxyURL(account), account.ID, account.Concurrency, s.kiroTLSProfile(account))
 	if err != nil {
 		return "", fmt.Errorf("refresh kiro token: %w", err)

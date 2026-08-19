@@ -168,6 +168,83 @@ func TestFetchKiroUsageLimitsUsesOfficialReadOnlyEndpoint(t *testing.T) {
 	require.Empty(t, upstream.request.URL.Query().Get("profileArn"))
 	require.Equal(t, "AmazonCodeWhispererService.GetUsageLimits", upstream.request.Header.Get("x-amz-target"))
 	require.Equal(t, "Bearer valid-access", upstream.request.Header.Get("Authorization"))
+	require.Contains(t, upstream.request.Header.Get("User-Agent"), "KiroIDE-")
+	require.Contains(t, upstream.request.Header.Get("x-amz-user-agent"), "KiroIDE-")
+}
+
+type kiroForwardUpstream struct {
+	requests []*http.Request
+	bodies   [][]byte
+	response *http.Response
+}
+
+func (u *kiroForwardUpstream) Do(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	return nil, nil
+}
+
+func (u *kiroForwardUpstream) DoWithTLS(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	if req.Body != nil {
+		body, _ := io.ReadAll(req.Body)
+		u.bodies = append(u.bodies, body)
+		cloned.Body = io.NopCloser(strings.NewReader(string(body)))
+	}
+	u.requests = append(u.requests, cloned)
+	if u.response != nil {
+		return u.response, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"x-amzn-requestid": []string{"req-1"}},
+		Body:       io.NopCloser(strings.NewReader("")),
+	}, nil
+}
+
+func TestSendKiroRequestAppliesIDEFingerprintHeaders(t *testing.T) {
+	upstream := &kiroForwardUpstream{}
+	svc := &GatewayService{httpUpstream: upstream}
+	account := &Account{ID: 81, Platform: PlatformKiro, Type: AccountTypeOAuth, Credentials: map[string]any{
+		"refresh_token": "rt-kiro",
+		"region":        "us-east-1",
+	}}
+	resp, err := svc.sendKiroRequest(context.Background(), account, []byte(`{}`), "access")
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	_ = resp.Body.Close()
+	require.Len(t, upstream.requests, 1)
+	req := upstream.requests[0]
+	require.Equal(t, "https://runtime.us-east-1.kiro.dev/generateAssistantResponse", req.URL.String())
+	require.Contains(t, req.Header.Get("User-Agent"), "KiroIDE-0.11.107-")
+	require.Contains(t, req.Header.Get("x-amz-user-agent"), "KiroIDE-0.11.107-")
+	require.Equal(t, "vibe", req.Header.Get("x-amzn-kiro-agent-mode"))
+}
+
+func TestForwardKiroWebSearchUsesMCPAndKeepsRuntimeURLUnchanged(t *testing.T) {
+	upstream := &kiroForwardUpstream{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"{\"results\":[{\"title\":\"Go\",\"url\":\"https://go.dev\",\"snippet\":\"lang\"}]}"}]}}`)),
+		},
+	}
+	svc := &GatewayService{httpUpstream: upstream}
+	account := &Account{ID: 82, Platform: PlatformKiro, Type: AccountTypeOAuth, Credentials: map[string]any{
+		"access_token":  "valid-access",
+		"refresh_token": "rt-kiro",
+		"region":        "us-east-1",
+	}}
+	body := []byte(`{"model":"claude-haiku-4.5","messages":[{"role":"user","content":"Perform a web search for the query: golang"}],"tools":[{"name":"web_search","type":"web_search_20250305"}]}`)
+	resp, err := svc.forwardKiroAnthropicResponse(context.Background(), account, body, "claude-haiku-4.5", true, "")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	out, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(out), `"type":"server_tool_use"`)
+	require.Contains(t, string(out), `"type":"web_search_tool_result"`)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "https://codewhisperer.us-east-1.amazonaws.com/mcp", upstream.requests[0].URL.String())
+	require.Contains(t, upstream.requests[0].Header.Get("User-Agent"), "KiroIDE-")
+	require.NotEqual(t, "https://runtime.us-east-1.kiro.dev/generateAssistantResponse", upstream.requests[0].URL.String())
 }
 
 type kiroAccountTestRepo struct {
