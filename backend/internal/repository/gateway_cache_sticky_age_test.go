@@ -27,3 +27,10 @@ func TestBuildSessionBoundAtKeyIsolatesGroup(t *testing.T) {
 	require.NotEqual(t, buildSessionBoundAtKey(1, "abc"), buildSessionBoundAtKey(2, "abc"))
 	require.NotEqual(t, buildSessionKey(1, "abc"), buildSessionBoundAtKey(1, "abc"))
 }
+
+func TestStickyBindingUsesAbsoluteCap(t *testing.T) {
+	require.False(t, stickyBindingUsesAbsoluteCap(0))
+	require.True(t, stickyBindingUsesAbsoluteCap(time.Hour))
+	require.True(t, stickyBindingUsesAbsoluteCap(30*time.Minute))
+	require.False(t, stickyBindingUsesAbsoluteCap(24*time.Hour), "explicit long TTLs must keep their requested lifetime")
+}

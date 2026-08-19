@@ -863,10 +863,11 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	}
 
 	// 1. 带 cache_control: {type: "ephemeral"} 的内容与上游 prompt cache 同源，
-	// 优先于 header，避免不同 session_id 把同一可缓存前缀拆到不同账号。
+	// 优先于 header，避免同一 API Key 下不同 session_id 把同一可缓存前缀拆到不同账号。
+	// 种子必须混入 APIKeyID，否则同 group 下不同用户的相同 system 前缀会共享一条绑定。
 	cacheableContent := s.extractCacheableContent(parsed)
 	if cacheableContent != "" {
-		hash := s.hashContent(cacheableContent)
+		hash := s.hashContent(isolateCacheableStickySeed(parsed.SessionContext, cacheableContent))
 		s.logStickyHashSource("cacheable_content", hash, 0)
 		return hash
 	}
@@ -920,6 +921,13 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 
 func isolateClientSessionStickySeed(apiKeyID int64, sid string) string {
 	return clientSessionStickySeedPrefix + strconv.FormatInt(apiKeyID, 10) + ":" + sid
+}
+
+func isolateCacheableStickySeed(ctx *SessionContext, cacheableContent string) string {
+	if ctx == nil {
+		return cacheableContent
+	}
+	return "key:" + strconv.FormatInt(ctx.APIKeyID, 10) + "|" + cacheableContent
 }
 
 func (s *GatewayService) logStickyHashSource(source, hash string, contentLen int) {

@@ -125,7 +125,10 @@ func TestGenerateSessionHash_CacheControlBeatsClientSessionID(t *testing.T) {
 	h1 := svc.GenerateSessionHash(withHeader)
 	h2 := svc.GenerateSessionHash(otherHeader)
 	require.NotEmpty(t, h1)
-	require.Equal(t, h1, h2, "ephemeral cache prefix must keep accounts pinned across different session headers")
+	require.NotEqual(t, h1, h2, "same cache prefix under different API keys must not share a sticky hash")
+
+	sameKeyOtherHeader := mustParseSessionHashRequest(t, body, &SessionContext{ClientIP: "9.8.7.6", UserAgent: "other", APIKeyID: 1, ClientSessionID: "conv-b"})
+	require.Equal(t, h1, svc.GenerateSessionHash(sameKeyOtherHeader), "same API key must stay pinned to the cache prefix")
 }
 
 func TestGenerateSessionHash_ClientSessionIDStableAcrossTurns(t *testing.T) {
@@ -325,8 +328,10 @@ func TestGenerateSessionHash_ResponsesInputDoesNotOverrideHigherPrioritySources(
 	t.Run("cache control", func(t *testing.T) {
 		body := `{"system":[{"type":"text","text":"stable cache anchor","cache_control":{"type":"ephemeral"}}],"input":"hello"}`
 		first := mustParseResponsesSessionHashRequest(t, body, ctx)
-		second := mustParseResponsesSessionHashRequest(t, body, &SessionContext{ClientIP: "9.8.7.6", UserAgent: "other", APIKeyID: 2})
+		second := mustParseResponsesSessionHashRequest(t, body, &SessionContext{ClientIP: "9.8.7.6", UserAgent: "other", APIKeyID: 1})
 		require.Equal(t, svc.GenerateSessionHash(first), svc.GenerateSessionHash(second))
+		otherKey := mustParseResponsesSessionHashRequest(t, body, &SessionContext{ClientIP: "9.8.7.6", UserAgent: "other", APIKeyID: 2})
+		require.NotEqual(t, svc.GenerateSessionHash(first), svc.GenerateSessionHash(otherKey))
 	})
 }
 
@@ -525,7 +530,10 @@ func TestGenerateSessionHash_CacheControlOverridesSessionContext(t *testing.T) {
 
 	h1 := svc.GenerateSessionHash(parsed1)
 	h2 := svc.GenerateSessionHash(parsed2)
-	require.Equal(t, h1, h2, "cache_control ephemeral has higher priority, SessionContext should not affect result")
+	require.NotEqual(t, h1, h2, "cache_control sticky hashes must still isolate different API keys")
+
+	sameKey := mustParseSessionHashRequest(t, body, &SessionContext{ClientIP: "9.9.9.9", UserAgent: "ua3", APIKeyID: 100})
+	require.Equal(t, h1, svc.GenerateSessionHash(sameKey), "same API key must stay pinned to the cache prefix")
 }
 
 func TestGenerateSessionHash_FallbackIncludesModelAndTools(t *testing.T) {

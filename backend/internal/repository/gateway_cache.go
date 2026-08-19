@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -18,9 +19,13 @@ const stickySessionPrefix = "sticky_session:"
 const stickySessionBoundAtPrefix = "sticky_session_bound_at:"
 const liveCallPrefix = "live:call:"
 
-// stickySessionMaxAgeCaps how long a sliding-TTL binding may live from first
-// write. RefreshSessionTTL extends idle expiry but never this absolute age, so
-// a long conversation cannot pin one account indefinitely.
+// stickySessionMaxAgeCaps how long a sliding 1h idle-TTL binding may live from
+// first write. RefreshSessionTTL extends idle expiry but never this absolute
+// age, so a long conversation cannot pin one account indefinitely.
+//
+// Bindings whose caller-requested TTL already exceeds this cap (Grok video
+// request bindings, longer WS response pins) keep their explicit TTL and are
+// not force-expired at 1h.
 const stickySessionMaxAge = time.Hour
 
 type gatewayCache struct {
@@ -44,7 +49,8 @@ func buildSessionBoundAtKey(groupID int64, sessionHash string) string {
 func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
 	key := buildSessionKey(groupID, sessionHash)
 	if expired, err := c.stickyBindingPastMaxAge(ctx, groupID, sessionHash); err != nil {
-		return 0, err
+		// Birth-key bookkeeping must not fail a readable primary binding.
+		slog.Warn("sticky.bound_at_read_failed", "group_id", groupID, "error", err)
 	} else if expired {
 		_ = c.DeleteSessionAccountID(ctx, groupID, sessionHash)
 		return 0, service.ErrStickySessionNotFound
@@ -64,28 +70,35 @@ func (c *gatewayCache) SetSessionAccountID(ctx context.Context, groupID int64, s
 	if err := c.rdb.Set(ctx, key, accountID, ttl).Err(); err != nil {
 		return err
 	}
+	if !stickyBindingUsesAbsoluteCap(ttl) {
+		return nil
+	}
 	// NX: keep the original bind timestamp across later Set/Refresh so the
 	// absolute age is measured from first write, not last write.
 	boundAtTTL := stickySessionMaxAge + ttl
 	if err := c.rdb.SetNX(ctx, buildSessionBoundAtKey(groupID, sessionHash), time.Now().Unix(), boundAtTTL).Err(); err != nil {
-		return err
+		slog.Warn("sticky.bound_at_write_failed", "group_id", groupID, "error", err)
 	}
 	return nil
 }
 
 func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, sessionHash string, ttl time.Duration) error {
-	if expired, err := c.stickyBindingPastMaxAge(ctx, groupID, sessionHash); err != nil {
-		return err
-	} else if expired {
-		return c.DeleteSessionAccountID(ctx, groupID, sessionHash)
+	if stickyBindingUsesAbsoluteCap(ttl) {
+		if expired, err := c.stickyBindingPastMaxAge(ctx, groupID, sessionHash); err != nil {
+			slog.Warn("sticky.bound_at_read_failed", "group_id", groupID, "error", err)
+		} else if expired {
+			return c.DeleteSessionAccountID(ctx, groupID, sessionHash)
+		}
 	}
 	key := buildSessionKey(groupID, sessionHash)
 	if err := c.rdb.Expire(ctx, key, ttl).Err(); err != nil {
 		return err
 	}
-	// Keep the birth key alive at least as long as the binding plus the
-	// remaining max-age window so a later Get can still enforce the cap.
-	_ = c.rdb.Expire(ctx, buildSessionBoundAtKey(groupID, sessionHash), stickySessionMaxAge+ttl).Err()
+	if stickyBindingUsesAbsoluteCap(ttl) {
+		// Keep the birth key alive at least as long as the binding plus the
+		// remaining max-age window so a later Get can still enforce the cap.
+		_ = c.rdb.Expire(ctx, buildSessionBoundAtKey(groupID, sessionHash), stickySessionMaxAge+ttl).Err()
+	}
 	return nil
 }
 
@@ -112,6 +125,10 @@ func (c *gatewayCache) stickyBindingPastMaxAge(ctx context.Context, groupID int6
 		return false, err
 	}
 	return stickyBindingUnixPastMaxAge(raw, time.Now(), stickySessionMaxAge), nil
+}
+
+func stickyBindingUsesAbsoluteCap(ttl time.Duration) bool {
+	return ttl > 0 && ttl <= stickySessionMaxAge
 }
 
 func stickyBindingUnixPastMaxAge(raw string, now time.Time, maxAge time.Duration) bool {
