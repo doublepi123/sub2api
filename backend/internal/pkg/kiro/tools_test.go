@@ -49,7 +49,10 @@ func TestPairToolTurnsAddsPlaceholderAndDropsOrphans(t *testing.T) {
 	require.Len(t, got, 2)
 	require.Len(t, got[1].ToolResults, 2)
 	require.Equal(t, "tool_2", got[1].ToolResults[0]["toolUseId"])
-	require.Equal(t, placeholder, got[1].ToolResults[0]["content"].([]map[string]string)[0]["text"])
+	content, ok := got[1].ToolResults[0]["content"].([]map[string]string)
+	require.True(t, ok)
+	require.NotEmpty(t, content)
+	require.Equal(t, placeholder, content[0]["text"])
 	require.Equal(t, "tool_1", got[1].ToolResults[1]["toolUseId"])
 }
 

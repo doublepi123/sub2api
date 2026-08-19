@@ -636,7 +636,7 @@ func (s *streamState) applyTokenUsage(obj map[string]any) {
 	raw, ok := obj["tokenUsage"]
 	if !ok {
 		if nested, nestedOK := obj["metadata"].(map[string]any); nestedOK {
-			raw, ok = nested["tokenUsage"]
+			raw = nested["tokenUsage"]
 		}
 	}
 	usage, ok := raw.(map[string]any)

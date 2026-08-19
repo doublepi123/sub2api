@@ -101,7 +101,7 @@ func concatDelta(events []thinkingEvent) string {
 	var b strings.Builder
 	for _, e := range events {
 		if e.kind == thinkingEventDelta {
-			b.WriteString(e.text)
+			_, _ = b.WriteString(e.text)
 		}
 	}
 	return b.String()
@@ -120,7 +120,7 @@ func concatText(events []thinkingEvent) string {
 	var b strings.Builder
 	for _, e := range events {
 		if e.kind == thinkingEventText {
-			b.WriteString(e.text)
+			_, _ = b.WriteString(e.text)
 		}
 	}
 	return b.String()

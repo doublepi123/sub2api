@@ -44,10 +44,7 @@ func ExtractWebSearchQuery(messages []apicompat.AnthropicMessage) string {
 	if len(messages) == 0 {
 		return ""
 	}
-	text := firstMessageText(messages[0])
-	if strings.HasPrefix(text, webSearchQueryPrefix) {
-		text = text[len(webSearchQueryPrefix):]
-	}
+	text := strings.TrimPrefix(firstMessageText(messages[0]), webSearchQueryPrefix)
 	return strings.TrimSpace(text)
 }
 
@@ -195,7 +192,7 @@ func webSearchSummary(query string, results []WebSearchResult) string {
 	var b strings.Builder
 	_, _ = fmt.Fprintf(&b, "Here are the search results for %q:\n\n", query)
 	if len(results) == 0 {
-		b.WriteString("No results found.\n")
+		_, _ = b.WriteString("No results found.\n")
 	} else {
 		for i, result := range results {
 			_, _ = fmt.Fprintf(&b, "%d. **%s**\n", i+1, result.Title)
@@ -205,7 +202,7 @@ func webSearchSummary(query string, results []WebSearchResult) string {
 			_, _ = fmt.Fprintf(&b, "   Source: %s\n\n", result.URL)
 		}
 	}
-	b.WriteString("\nPlease note that these are web search results and may not be fully accurate or up-to-date.")
+	_, _ = b.WriteString("\nPlease note that these are web search results and may not be fully accurate or up-to-date.")
 	return b.String()
 }
 
@@ -234,7 +231,7 @@ func chunkRunes(s string, size int) []string {
 	var b strings.Builder
 	n := 0
 	for _, r := range s {
-		b.WriteRune(r)
+		_, _ = b.WriteRune(r)
 		n++
 		if n == size {
 			chunks = append(chunks, b.String())
