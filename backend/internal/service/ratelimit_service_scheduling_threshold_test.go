@@ -145,15 +145,21 @@ func TestRateLimitService_ApplyAccountSchedulingThreshold_UnsupportedPlatformDoe
 
 	account := &Account{
 		ID:          2002,
-		Platform:    PlatformKiro,
+		Platform:    PlatformGemini,
 		Status:      StatusActive,
 		Schedulable: true,
 		Credentials: map[string]any{
 			"account_scheduling_threshold": 1,
 		},
 		Extra: map[string]any{
-			"kiro_sched_utilization": 99.0,
-			"kiro_sched_reset_at":    time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339),
+			"gemini_usage_raw": map[string]any{
+				"buckets": []any{
+					map[string]any{
+						"modelId":           "gemini-2.5-pro",
+						"remainingFraction": 0.01,
+					},
+				},
+			},
 		},
 	}
 
@@ -163,4 +169,35 @@ func TestRateLimitService_ApplyAccountSchedulingThreshold_UnsupportedPlatformDoe
 	require.Equal(t, 0, accountRepo.tempCalls)
 	require.Nil(t, account.TempUnschedulableUntil)
 	require.Empty(t, account.TempUnschedulableReason)
+}
+
+func TestRateLimitService_ApplyAccountSchedulingThreshold_KiroBlocksWhenCreditsExceedThreshold(t *testing.T) {
+	accountSchedulingThresholdsSF.Forget(SettingKeyAccountSchedulingThresholds)
+	accountSchedulingThresholdsCache.Store(&cachedAccountSchedulingThresholds{})
+
+	settingsRepo := newMockSettingRepo()
+	settingsRepo.data[SettingKeyAccountSchedulingThresholds] = `{"kiro":90}`
+
+	accountRepo := &rateLimitAccountRepoStub{}
+	rl := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+	rl.SetSettingService(NewSettingService(settingsRepo, &config.Config{}))
+
+	until := time.Now().UTC().Add(24 * time.Hour)
+	account := &Account{
+		ID:          2003,
+		Platform:    PlatformKiro,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			kiroSchedUtilizationKey: 99.0,
+			kiroSchedResetAtKey:     until.Format(time.RFC3339),
+		},
+	}
+
+	blocked := rl.ApplyAccountSchedulingThreshold(context.Background(), account)
+
+	require.True(t, blocked)
+	require.Equal(t, 1, accountRepo.tempCalls)
+	require.NotNil(t, account.TempUnschedulableUntil)
+	require.True(t, IsAccountSchedulingThresholdReason(accountRepo.lastTempReason))
 }

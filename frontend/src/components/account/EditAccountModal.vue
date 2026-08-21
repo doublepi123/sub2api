@@ -2837,6 +2837,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
+import { SCHEDULING_THRESHOLD_PLATFORMS } from '@/api/admin/settings'
 import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
 import type {
   Account,
@@ -4210,7 +4211,7 @@ const applyTempUnschedConfig = (credentials: Record<string, unknown>) => {
 
 
 function supportsAccountSchedulingThresholdOverridePlatform(platform: Account['platform'] | undefined) {
-  return platform === 'openai' || platform === 'anthropic' || platform === 'grok'
+  return SCHEDULING_THRESHOLD_PLATFORMS.includes(platform as (typeof SCHEDULING_THRESHOLD_PLATFORMS)[number])
 }
 
 function normalizeAccountSchedulingThresholdOverride(value: unknown): number | null {

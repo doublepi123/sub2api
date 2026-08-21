@@ -62,6 +62,10 @@ func EvaluateAccountSchedulingThreshold(account *Account, thresholds map[string]
 		winner = pickLatestResetSchedulingCandidate(cnProviderThresholdCandidates(account, PlatformKimi), threshold, now)
 	case PlatformZhipu:
 		winner = pickLatestResetSchedulingCandidate(cnProviderThresholdCandidates(account, PlatformZhipu), threshold, now)
+	case PlatformKiro:
+		winner = pickLatestResetSchedulingCandidate(kiroThresholdCandidates(account), threshold, now)
+	case PlatformAntigravity:
+		winner = pickLatestResetSchedulingCandidate(antigravityThresholdCandidates(account), threshold, now)
 	default:
 		return decision
 	}
@@ -280,14 +284,20 @@ func anthropicThresholdCandidates(account *Account) []*accountSchedulingThreshol
 	return candidates
 }
 
-// NOTE: Gemini / Kiro / Antigravity are intentionally NOT threshold-pausing
-// platforms (see AllowedSchedulingThresholdPlatforms and the evaluator switch,
-// asserted by TestEvaluateAccountSchedulingThreshold_UnsupportedPlatformsDoNotPause).
-// Their former per-platform candidate readers were dead code — never reachable
-// from EvaluateAccountSchedulingThreshold — and have been removed to avoid the
-// false impression that configuring a threshold for them has any effect. The
-// kiro_sched_* / antigravity_sched_* extras are still written purely as
-// observability snapshots.
+const (
+	kiroSchedUtilizationKey        = "kiro_sched_utilization"
+	kiroSchedResetAtKey            = "kiro_sched_reset_at"
+	kiroSchedUpdatedAtKey          = "kiro_sched_usage_updated_at"
+	antigravitySchedUtilizationKey = "antigravity_sched_utilization"
+	antigravitySchedResetAtKey     = "antigravity_sched_reset_at"
+	antigravitySchedScopeKey       = "antigravity_sched_scope"
+	antigravitySchedUpdatedAtKey   = "antigravity_sched_usage_updated_at"
+)
+
+// NOTE: Gemini remains intentionally NOT a threshold-pausing platform
+// (see AllowedSchedulingThresholdPlatforms and
+// TestEvaluateAccountSchedulingThreshold_UnsupportedPlatformsDoNotPause).
+// Kiro / Antigravity extras are written from usage probes and consumed here.
 
 // grokThresholdCandidates uses only header-projected
 // grok_sched_utilization / grok_sched_reset_at (rolling quota window, reset
@@ -303,6 +313,38 @@ func grokThresholdCandidates(account *Account) []*accountSchedulingThresholdCand
 			scope:       "grok",
 			usedPercent: schedulingPercentValue(account.Extra["grok_sched_utilization"]),
 			until:       parseSchedulingResetAt(account.Extra["grok_sched_reset_at"]),
+		},
+	}
+}
+
+func kiroThresholdCandidates(account *Account) []*accountSchedulingThresholdCandidate {
+	if account == nil || len(account.Extra) == 0 {
+		return nil
+	}
+	return []*accountSchedulingThresholdCandidate{
+		{
+			window:      "credits",
+			scope:       "kiro",
+			usedPercent: schedulingPercentValue(account.Extra[kiroSchedUtilizationKey]),
+			until:       parseSchedulingResetAt(account.Extra[kiroSchedResetAtKey]),
+		},
+	}
+}
+
+func antigravityThresholdCandidates(account *Account) []*accountSchedulingThresholdCandidate {
+	if account == nil || len(account.Extra) == 0 {
+		return nil
+	}
+	scope := strings.TrimSpace(firstStringValue(account.Extra, antigravitySchedScopeKey))
+	if scope == "" {
+		scope = "gemini"
+	}
+	return []*accountSchedulingThresholdCandidate{
+		{
+			window:      "quota",
+			scope:       scope,
+			usedPercent: schedulingPercentValue(account.Extra[antigravitySchedUtilizationKey]),
+			until:       parseSchedulingResetAt(account.Extra[antigravitySchedResetAtKey]),
 		},
 	}
 }

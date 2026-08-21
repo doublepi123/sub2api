@@ -543,9 +543,11 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 func defaultAccountSchedulingThresholds() map[string]int {
 	return map[string]int{
-		PlatformOpenAI:    100,
-		PlatformAnthropic: 100,
-		PlatformGrok:      100,
+		PlatformOpenAI:      100,
+		PlatformAnthropic:   100,
+		PlatformGrok:        100,
+		PlatformKiro:        100,
+		PlatformAntigravity: 100,
 	}
 }
 

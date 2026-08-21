@@ -748,6 +748,7 @@ func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account
 		if s.cache != nil {
 			s.cache.kiroUsageCache.Store(account.ID, &kiroUsageCache{usageInfo: usage, timestamp: time.Now()})
 		}
+		s.persistKiroSchedulerExtras(ctx, account, usage)
 		return usage, nil
 	}
 
@@ -858,6 +859,108 @@ func (s *AccountUsageService) syncActiveToPassive(ctx context.Context, accountID
 			slog.Warn("sync_active_to_passive_session_window_end_failed", "account_id", accountID, "error", err)
 		}
 	}
+}
+
+func (s *AccountUsageService) persistKiroSchedulerExtras(ctx context.Context, account *Account, usage *UsageInfo) {
+	if s == nil || account == nil || account.ID <= 0 || usage == nil || usage.KiroSubscription == nil {
+		return
+	}
+	updates := buildKiroSchedulerExtraUpdates(usage.KiroSubscription)
+	s.persistSchedulerExtraUpdates(ctx, account, updates, "kiro_sched_persist_failed")
+}
+
+func (s *AccountUsageService) persistAntigravitySchedulerExtras(ctx context.Context, account *Account, usage *UsageInfo) {
+	if s == nil || account == nil || account.ID <= 0 || usage == nil {
+		return
+	}
+	updates := buildAntigravitySchedulerExtraUpdates(usage.AntigravityQuota)
+	s.persistSchedulerExtraUpdates(ctx, account, updates, "antigravity_sched_persist_failed")
+}
+
+func (s *AccountUsageService) persistSchedulerExtraUpdates(ctx context.Context, account *Account, updates map[string]any, warnEvent string) {
+	if s == nil || account == nil || account.ID <= 0 || len(updates) == 0 {
+		return
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	for key, value := range updates {
+		account.Extra[key] = value
+	}
+	if s.accountRepo == nil {
+		return
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn(warnEvent, "account_id", account.ID, "error", err)
+	}
+}
+
+func buildKiroSchedulerExtraUpdates(quota *KiroSubscriptionQuota) map[string]any {
+	if quota == nil {
+		return nil
+	}
+	util := quota.UsagePercent
+	if util < 0 {
+		util = 0
+	}
+	if util > 100 {
+		util = 100
+	}
+	updates := map[string]any{
+		kiroSchedUtilizationKey: util,
+		kiroSchedUpdatedAtKey:   time.Now().UTC().Format(time.RFC3339),
+	}
+	if quota.NextResetAt != nil && quota.NextResetAt.After(time.Now()) {
+		updates[kiroSchedResetAtKey] = quota.NextResetAt.UTC().Format(time.RFC3339)
+	}
+	return updates
+}
+
+func buildAntigravitySchedulerExtraUpdates(quotas map[string]*AntigravityModelQuota) map[string]any {
+	model, quota := pickAntigravityGeminiSchedulerQuota(quotas)
+	if quota == nil {
+		return nil
+	}
+	util := float64(quota.Utilization)
+	if util < 0 {
+		util = 0
+	}
+	if util > 100 {
+		util = 100
+	}
+	updates := map[string]any{
+		antigravitySchedUtilizationKey: util,
+		antigravitySchedScopeKey:       model,
+		antigravitySchedUpdatedAtKey:   time.Now().UTC().Format(time.RFC3339),
+	}
+	if resetAt := parseSchedulingResetAt(quota.ResetTime); resetAt != nil && resetAt.After(time.Now()) {
+		updates[antigravitySchedResetAtKey] = resetAt.UTC().Format(time.RFC3339)
+	}
+	return updates
+}
+
+func pickAntigravityGeminiSchedulerQuota(quotas map[string]*AntigravityModelQuota) (string, *AntigravityModelQuota) {
+	var (
+		bestName string
+		best     *AntigravityModelQuota
+	)
+	for name, quota := range quotas {
+		if quota == nil || !isAntigravityGeminiSchedulerModel(name) {
+			continue
+		}
+		if best == nil || quota.Utilization > best.Utilization ||
+			(quota.Utilization == best.Utilization && name < bestName) {
+			bestName = name
+			best = quota
+		}
+	}
+	return bestName, best
+}
+
+func isAntigravityGeminiSchedulerModel(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.TrimPrefix(normalized, "models/")
+	return strings.HasPrefix(normalized, "gemini-")
 }
 
 func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {
@@ -1232,6 +1335,7 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 			usageInfo: fetchResult.UsageInfo,
 			timestamp: time.Now(),
 		})
+		s.persistAntigravitySchedulerExtras(fetchCtx, account, fetchResult.UsageInfo)
 		return fetchResult.UsageInfo, nil
 	})
 

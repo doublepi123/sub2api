@@ -45,25 +45,77 @@ func TestGatewayService_ListSchedulableAccounts_DoesNotFilterUnsupportedThreshol
 		accounts: []Account{
 			{
 				ID:          3101,
-				Platform:    PlatformKiro,
+				Platform:    PlatformGemini,
 				Status:      StatusActive,
 				Schedulable: true,
 				Credentials: map[string]any{
 					"account_scheduling_threshold": 1,
 				},
 				Extra: map[string]any{
-					"kiro_sched_utilization": 95.0,
-					"kiro_sched_reset_at":    time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339),
+					"gemini_usage_raw": map[string]any{
+						"buckets": []any{
+							map[string]any{
+								"modelId":           "gemini-2.5-pro",
+								"remainingFraction": 0.05,
+							},
+						},
+					},
 				},
 			},
 			{
 				ID:          3102,
+				Platform:    PlatformGemini,
+				Status:      StatusActive,
+				Schedulable: true,
+			},
+		},
+	}
+
+	rateLimitService := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+	rateLimitService.SetSettingService(NewSettingService(settingsRepo, &config.Config{}))
+	svc := &GatewayService{
+		accountRepo:      accountRepo,
+		cfg:              &config.Config{},
+		rateLimitService: rateLimitService,
+	}
+
+	accounts, useMixed, err := svc.listSchedulableAccounts(context.Background(), nil, PlatformGemini, false)
+
+	require.NoError(t, err)
+	require.False(t, useMixed)
+	require.Len(t, accounts, 2)
+	require.Equal(t, int64(3101), accounts[0].ID)
+	require.Equal(t, int64(3102), accounts[1].ID)
+	require.Equal(t, 0, accountRepo.tempCalls)
+}
+
+func TestGatewayService_ListSchedulableAccounts_FiltersKiroThresholdBlockedAccounts(t *testing.T) {
+	accountSchedulingThresholdsSF.Forget(SettingKeyAccountSchedulingThresholds)
+	accountSchedulingThresholdsCache.Store(&cachedAccountSchedulingThresholds{})
+
+	settingsRepo := newMockSettingRepo()
+	settingsRepo.data[SettingKeyAccountSchedulingThresholds] = `{"kiro":90}`
+
+	accountRepo := &thresholdSelectionAccountRepoStub{
+		accounts: []Account{
+			{
+				ID:          3201,
 				Platform:    PlatformKiro,
 				Status:      StatusActive,
 				Schedulable: true,
 				Extra: map[string]any{
-					"kiro_sched_utilization": 42.0,
-					"kiro_sched_reset_at":    time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339),
+					kiroSchedUtilizationKey: 95.0,
+					kiroSchedResetAtKey:     time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339),
+				},
+			},
+			{
+				ID:          3202,
+				Platform:    PlatformKiro,
+				Status:      StatusActive,
+				Schedulable: true,
+				Extra: map[string]any{
+					kiroSchedUtilizationKey: 42.0,
+					kiroSchedResetAtKey:     time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339),
 				},
 			},
 		},
@@ -81,10 +133,9 @@ func TestGatewayService_ListSchedulableAccounts_DoesNotFilterUnsupportedThreshol
 
 	require.NoError(t, err)
 	require.False(t, useMixed)
-	require.Len(t, accounts, 2)
-	require.Equal(t, int64(3101), accounts[0].ID)
-	require.Equal(t, int64(3102), accounts[1].ID)
-	require.Equal(t, 0, accountRepo.tempCalls)
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(3202), accounts[0].ID)
+	require.Equal(t, 1, accountRepo.tempCalls)
 }
 
 func TestOpenAIGatewayService_ListSchedulableAccounts_FiltersThresholdBlockedAccounts(t *testing.T) {
