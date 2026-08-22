@@ -34,6 +34,28 @@ func (r *thresholdSelectionAccountRepoStub) ListSchedulableUngroupedByPlatform(c
 	return r.ListSchedulableByPlatform(ctx, platform)
 }
 
+func (r *thresholdSelectionAccountRepoStub) ListSchedulableByPlatforms(_ context.Context, platforms []string) ([]Account, error) {
+	wanted := make(map[string]bool, len(platforms))
+	for _, platform := range platforms {
+		wanted[platform] = true
+	}
+	filtered := make([]Account, 0, len(r.accounts))
+	for _, account := range r.accounts {
+		if wanted[account.Platform] {
+			filtered = append(filtered, account)
+		}
+	}
+	return filtered, nil
+}
+
+func (r *thresholdSelectionAccountRepoStub) ListSchedulableByGroupIDAndPlatforms(ctx context.Context, _ int64, platforms []string) ([]Account, error) {
+	return r.ListSchedulableByPlatforms(ctx, platforms)
+}
+
+func (r *thresholdSelectionAccountRepoStub) ListSchedulableUngroupedByPlatforms(ctx context.Context, platforms []string) ([]Account, error) {
+	return r.ListSchedulableByPlatforms(ctx, platforms)
+}
+
 func TestGatewayService_ListSchedulableAccounts_DoesNotFilterUnsupportedThresholdPlatforms(t *testing.T) {
 	accountSchedulingThresholdsSF.Forget(SettingKeyAccountSchedulingThresholds)
 	accountSchedulingThresholdsCache.Store(&cachedAccountSchedulingThresholds{})
@@ -82,7 +104,9 @@ func TestGatewayService_ListSchedulableAccounts_DoesNotFilterUnsupportedThreshol
 	accounts, useMixed, err := svc.listSchedulableAccounts(context.Background(), nil, PlatformGemini, false)
 
 	require.NoError(t, err)
-	require.False(t, useMixed)
+	// Gemini 与 Anthropic 一样参与 Antigravity 混合调度，useMixed 恒为 true。
+	// 本用例只验证阈值过滤不会误伤未配置阈值的平台账号。
+	require.True(t, useMixed)
 	require.Len(t, accounts, 2)
 	require.Equal(t, int64(3101), accounts[0].ID)
 	require.Equal(t, int64(3102), accounts[1].ID)
