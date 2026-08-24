@@ -81,7 +81,7 @@ jobs:
             --platform linux/amd64,linux/arm64 \
             --push \
             "${tags[@]}" \
-            --build-arg GOLANG_IMAGE=golang:1.26.6-alpine \
+            --build-arg GOLANG_IMAGE=golang:1.27.0-alpine \
             --build-arg "VERSION=$version" \
             --cache-from "type=registry,ref=$DOCKER_IMAGE:buildcache" \
             --cache-to "type=registry,ref=$DOCKER_IMAGE:buildcache,mode=max" \
