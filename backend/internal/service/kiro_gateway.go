@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -245,7 +244,7 @@ func (s *GatewayService) sendKiroWebSearchRequest(ctx context.Context, account *
 	if err != nil {
 		return nil, err
 	}
-	s.applyKiroIDEHeaders(req, account)
+	applyKiroIDEHeaders(req, account)
 	return s.httpUpstream.DoWithTLS(req, accountProxyURL(account), account.ID, account.Concurrency, s.kiroTLSProfile(account))
 }
 
@@ -261,21 +260,8 @@ func (s *GatewayService) sendKiroRequest(ctx context.Context, account *Account, 
 	req.Header.Set("x-amz-target", kiro.RuntimeTarget)
 	req.Header.Set("x-amzn-codewhisperer-optout", "true")
 	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
-	s.applyKiroIDEHeaders(req, account)
+	applyKiroIDEHeaders(req, account)
 	return s.httpUpstream.DoWithTLS(req, accountProxyURL(account), account.ID, account.Concurrency, s.kiroTLSProfile(account))
-}
-
-func (s *GatewayService) applyKiroIDEHeaders(req *http.Request, account *Account) {
-	if req == nil || account == nil {
-		return
-	}
-	machineID := kiro.MachineID(kiro.MachineIDInput{
-		Configured:   account.GetCredential("machine_id"),
-		APIKey:       firstNonEmpty(account.GetCredential("kiro_api_key"), account.GetCredential("api_key")),
-		RefreshToken: account.GetCredential("refresh_token"),
-		AccountID:    account.ID,
-	})
-	kiro.ApplyIDEHeaders(req.Header.Set, machineID)
 }
 
 // FetchKiroUsageLimits queries the same read-only credits endpoint used by the
@@ -334,7 +320,7 @@ func (s *GatewayService) sendKiroUsageLimitsRequest(ctx context.Context, account
 	if err != nil {
 		return nil, err
 	}
-	s.applyKiroIDEHeaders(req, account)
+	applyKiroIDEHeaders(req, account)
 	return s.httpUpstream.DoWithTLS(req, accountProxyURL(account), account.ID, account.Concurrency, s.kiroTLSProfile(account))
 }
 
@@ -347,114 +333,21 @@ func (s *GatewayService) kiroAccessToken(ctx context.Context, account *Account, 
 	if !force && token != "" && !kiroTokenNeedsRefresh(account.GetCredential("expires_at"), time.Now()) {
 		return token, nil
 	}
-	refreshToken := strings.TrimSpace(account.GetCredential("refresh_token"))
-	if refreshToken == "" {
-		if !force && token != "" {
-			return token, nil
-		}
-		return "", errors.New("kiro refresh token is required")
+	if !force && token != "" && strings.TrimSpace(account.GetCredential("refresh_token")) == "" {
+		return token, nil
 	}
-
-	social := kiroUsesSocialRefresh(account)
-	clientID := strings.TrimSpace(account.GetCredential("client_id"))
-	clientSecret := strings.TrimSpace(account.GetCredential("client_secret"))
-	if !social && (clientID == "" || clientSecret == "") {
-		if !force && token != "" {
-			return token, nil
-		}
-		return "", errors.New("kiro Builder ID refresh credentials are incomplete")
+	if !force && token != "" && !kiroUsesSocialRefresh(account) &&
+		(strings.TrimSpace(account.GetCredential("client_id")) == "" || strings.TrimSpace(account.GetCredential("client_secret")) == "") {
+		return token, nil
 	}
-
-	var (
-		body     []byte
-		tokenURL string
-	)
-	if social {
-		body, _ = json.Marshal(map[string]string{"refreshToken": refreshToken})
-		tokenURL = kiro.SocialRefreshURL(account.GetCredential("region"))
-	} else {
-		body, _ = json.Marshal(map[string]string{
-			"grantType": "refresh_token", "clientId": clientID,
-			"clientSecret": clientSecret, "refreshToken": refreshToken,
-		})
-		tokenURL = kiro.OIDCTokenURL(account.GetCredential("region"))
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(body))
+	credentials, err := refreshKiroCredentials(ctx, account, s.httpUpstream, s.tlsFPProfileService)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	s.applyKiroIDEHeaders(req, account)
-	resp, err := s.httpUpstream.DoWithTLS(req, accountProxyURL(account), account.ID, account.Concurrency, s.kiroTLSProfile(account))
-	if err != nil {
-		return "", fmt.Errorf("refresh kiro token: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= http.StatusBadRequest {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("refresh kiro token: upstream status %d", resp.StatusCode)
-	}
-	var result struct {
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-		ExpiresIn    int64  `json:"expiresIn"`
-		ProfileArn   string `json:"profileArn"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode kiro refresh response: %w", err)
-	}
-	if strings.TrimSpace(result.AccessToken) == "" {
-		return "", errors.New("refresh kiro token: response omitted accessToken")
-	}
-	credentials := shallowCopyMap(account.Credentials)
-	credentials["access_token"] = result.AccessToken
-	if result.RefreshToken != "" {
-		credentials["refresh_token"] = result.RefreshToken
-	}
-	if profileARN := strings.TrimSpace(result.ProfileArn); profileARN != "" {
-		credentials["profile_arn"] = profileARN
-	}
-	if social {
-		credentials["auth_method"] = "social"
-	}
-	if result.ExpiresIn <= 0 {
-		result.ExpiresIn = 3600
-	}
-	credentials["expires_at"] = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
 	if err := persistAccountCredentials(ctx, s.accountRepo, account, credentials); err != nil {
 		return "", fmt.Errorf("persist refreshed kiro token: %w", err)
 	}
-	return result.AccessToken, nil
-}
-
-// kiroUsesSocialRefresh reports whether the account should refresh via Kiro's
-// desktop social endpoint (Google/GitHub) instead of AWS SSO OIDC.
-func kiroUsesSocialRefresh(account *Account) bool {
-	if account == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(account.GetCredential("auth_method"))) {
-	case "social", "google", "github":
-		return true
-	case "idc", "builder_id", "builder-id", "builderid":
-		return false
-	}
-	return strings.TrimSpace(account.GetCredential("client_id")) == "" &&
-		strings.TrimSpace(account.GetCredential("client_secret")) == ""
-}
-
-func kiroTokenNeedsRefresh(raw string, now time.Time) bool {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return false
-	}
-	if expiresAt, err := time.Parse(time.RFC3339, raw); err == nil {
-		return !expiresAt.After(now.Add(2 * time.Minute))
-	}
-	if unix, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		return !time.Unix(unix, 0).After(now.Add(2 * time.Minute))
-	}
-	return true
+	return strings.TrimSpace(account.GetCredential("access_token")), nil
 }
 
 func accountProxyURL(account *Account) string {
