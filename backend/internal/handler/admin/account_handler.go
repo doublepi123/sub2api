@@ -65,6 +65,7 @@ type AccountHandler struct {
 	grokImportProber        grokImportProber
 	upstreamBillingProbe    *service.UpstreamBillingProbeService
 	ollamaCloudUsage        *service.OllamaCloudUsageService
+	kiroTokenRefresher      *service.KiroTokenRefresher
 }
 
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.
@@ -74,6 +75,12 @@ func (h *AccountHandler) SetUpstreamBillingProbeService(probe *service.UpstreamB
 
 func (h *AccountHandler) SetOllamaCloudUsageService(usage *service.OllamaCloudUsageService) {
 	h.ollamaCloudUsage = usage
+}
+
+func (h *AccountHandler) SetKiroTokenRefresher(refresher *service.KiroTokenRefresher) {
+	if h != nil {
+		h.kiroTokenRefresher = refresher
+	}
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -1295,6 +1302,15 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 		if baseURL := strings.TrimSpace(account.GetCredential("base_url")); baseURL != "" {
 			newCredentials["base_url"] = baseURL
 		}
+	} else if account.Platform == service.PlatformKiro {
+		if h.kiroTokenRefresher == nil {
+			return nil, "", fmt.Errorf("kiro token refresher is not configured")
+		}
+		refreshed, err := h.kiroTokenRefresher.Refresh(ctx, account)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to refresh Kiro credentials: %w", err)
+		}
+		newCredentials = refreshed
 	} else {
 		// Use Anthropic/Claude OAuth service to refresh token
 		tokenInfo, err := h.oauthService.RefreshAccountToken(ctx, account)
