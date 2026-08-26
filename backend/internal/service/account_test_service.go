@@ -152,6 +152,9 @@ type AccountTestService struct {
 	settingService            *SettingService
 	tlsFPProfileService       *TLSFingerprintProfileService
 	kiroGateway               kiroAccountTestGateway
+	modelMetadataRegistryMu   sync.Mutex
+	modelMetadataRegistry     map[string]modelsDevProvider
+	modelMetadataRegistryAt   time.Time
 	pluginManager             *PluginManager
 	agentIdentityTaskMu       sync.Mutex
 	agentIdentityWS           agentIdentityWSConnectionInvalidator
