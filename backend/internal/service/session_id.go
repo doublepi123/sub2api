@@ -20,6 +20,18 @@ var clientSessionIDHeaders = append(
 	claudeCodeSessionHeader,
 )
 
+// ClaudeCodeSessionIDFromHeader returns the stable Claude Code conversation
+// identifier carried by X-Claude-Code-Session-Id. It is intentionally exposed
+// separately from ExtractClientSessionID: callers that use it for routing must
+// make that scope explicit rather than accidentally changing every protocol's
+// session semantics.
+func ClaudeCodeSessionIDFromHeader(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	return sanitizeSessionID(c.GetHeader(claudeCodeSessionHeader))
+}
+
 // ExtractClientSessionID resolves the explicit client-provided session identifier from
 // request headers and returns it sanitized. It is protocol-agnostic and shared by
 // every gateway handler so all supported protocols record session_id through one seam.

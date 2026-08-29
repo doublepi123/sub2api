@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
@@ -120,7 +121,9 @@ func (s *GatewayService) ForwardAsResponses(
 
 	// 8-11. Authenticate, build and send the platform-specific request.
 	var resp *http.Response
+	var upstreamURL string
 	if account.Platform == PlatformKiro {
+		upstreamURL = kiro.RuntimeURL(account.GetCredential("region"))
 		resp, err = s.forwardKiroAnthropicResponse(ctx, account, anthropicBody, mappedModel, true, kiroConversationSeed(parsed))
 	} else {
 		token, tokenType, tokenErr := s.GetAccessToken(ctx, account)
@@ -137,24 +140,16 @@ func (s *GatewayService) ForwardAsResponses(
 		if buildErr != nil {
 			return nil, fmt.Errorf("build upstream request: %w", buildErr)
 		}
+		upstreamURL = upstreamReq.URL.String()
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	}
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
-		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			Kind:               "request_error",
-			Message:            safeErr,
+		return nil, s.handleUpstreamTransportError(ctx, c, account, err, OpsUpstreamErrorEvent{
+			UpstreamURL: safeUpstreamURL(upstreamURL),
 		})
-		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream request failed")
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -647,7 +642,12 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 // appendRawJSON appends a JSON fragment string to existing raw JSON.
 func appendRawJSON(existing json.RawMessage, fragment string) json.RawMessage {
-	if len(existing) == 0 {
+	// Anthropic initializes tool_use.input to {} in content_block_start, then
+	// streams the actual input through input_json_delta events. Treat that empty
+	// object as a placeholder instead of prefixing it to the streamed JSON.
+	var existingObject map[string]json.RawMessage
+	isEmptyObject := json.Unmarshal(existing, &existingObject) == nil && existingObject != nil && len(existingObject) == 0
+	if len(existing) == 0 || isEmptyObject {
 		return json.RawMessage(fragment)
 	}
 	return json.RawMessage(string(existing) + fragment)

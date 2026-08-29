@@ -82,6 +82,32 @@ func EvaluateAccountSchedulingThreshold(account *Account, thresholds map[string]
 	return decision
 }
 
+func evaluateAnthropicFableSchedulingThreshold(account *Account, thresholds map[string]int, now time.Time) AccountSchedulingThresholdDecision {
+	decision := AccountSchedulingThresholdDecision{}
+	if account == nil || !strings.EqualFold(strings.TrimSpace(account.Platform), PlatformAnthropic) {
+		return decision
+	}
+
+	decision.Platform = PlatformAnthropic
+	threshold, ok := resolveEffectiveAccountSchedulingThreshold(account, thresholds, PlatformAnthropic)
+	decision.ThresholdPercent = threshold
+	if !ok || threshold >= 100 {
+		return decision
+	}
+
+	candidate := anthropicFableThresholdCandidate(account)
+	if !candidateMatchesThreshold(candidate, threshold, now) {
+		return decision
+	}
+
+	decision.ShouldPause = true
+	decision.Window = candidate.window
+	decision.Scope = candidate.scope
+	decision.UsedPercent = candidate.usedPercent
+	decision.Until = candidate.until
+	return decision
+}
+
 func isAllowedSchedulingThresholdPlatform(platform string) bool {
 	for _, allowed := range AllowedSchedulingThresholdPlatforms {
 		if platform == allowed {
@@ -294,10 +320,30 @@ const (
 	antigravitySchedUpdatedAtKey   = "antigravity_sched_usage_updated_at"
 )
 
+func anthropicFableThresholdCandidate(account *Account) *accountSchedulingThresholdCandidate {
+	if account == nil {
+		return nil
+	}
+	usedPercent := utilizationAsPercent(account.Extra["passive_usage_7d_oi_utilization"])
+	if usedPercent <= 0 {
+		return nil
+	}
+	return &accountSchedulingThresholdCandidate{
+		window:      "7d_oi",
+		scope:       anthropicFableRateLimitKey,
+		usedPercent: usedPercent,
+		until:       parseSchedulingResetAt(account.Extra["passive_usage_7d_oi_reset"]),
+	}
+}
+
 // NOTE: Gemini remains intentionally NOT a threshold-pausing platform
 // (see AllowedSchedulingThresholdPlatforms and
 // TestEvaluateAccountSchedulingThreshold_UnsupportedPlatformsDoNotPause).
-// Kiro / Antigravity extras are written from usage probes and consumed here.
+//
+// Kiro / Antigravity ARE threshold-pausing platforms in this fork: both appear
+// in AllowedSchedulingThresholdPlatforms and in the evaluator switch, so the
+// readers below are live code. Upstream deleted them as dead code because
+// upstream never added those platforms to the allowlist.
 
 // grokThresholdCandidates uses only header-projected
 // grok_sched_utilization / grok_sched_reset_at (rolling quota window, reset
