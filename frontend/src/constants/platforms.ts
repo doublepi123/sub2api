@@ -27,3 +27,15 @@ export const GROUP_PLATFORM_OPTIONS = [
   ...CONCRETE_PLATFORM_OPTIONS,
   { value: 'composite', label: 'Composite' }
 ] as const satisfies readonly PlatformOption<GroupPlatform>[]
+
+/** Platforms that carry per-user quota limits, in display order. */
+export const PLATFORM_QUOTA_PLATFORMS = [
+  'anthropic',
+  'openai',
+  'gemini',
+  'antigravity',
+  'kiro',
+  'grok'
+] as const satisfies readonly AccountPlatform[]
+
+export type PlatformQuotaPlatform = (typeof PLATFORM_QUOTA_PLATFORMS)[number]

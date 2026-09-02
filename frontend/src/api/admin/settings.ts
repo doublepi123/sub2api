@@ -4,6 +4,7 @@
  */
 
 import { apiClient } from "../client";
+import { PLATFORM_QUOTA_PLATFORMS, type PlatformQuotaPlatform } from "@/constants/platforms";
 import type {
   CustomEndpoint,
   CustomMenuItem,
@@ -17,7 +18,7 @@ export interface DefaultSubscriptionSetting {
 }
 
 // ── 平台限额类型 ──────────────────────────────────────────────────
-export type PlatformType = "anthropic" | "openai" | "gemini" | "antigravity" | "kiro" | "grok"
+export type PlatformType = PlatformQuotaPlatform
 export type QuotaWindowType = "daily" | "weekly" | "monthly"
 
 /** 单平台三档限额；null = 不限制，undefined = 未填（等价 null） */
@@ -30,7 +31,7 @@ export interface PlatformQuotaLimits {
 /** 全平台默认限额 map（key = PlatformType） */
 export type DefaultPlatformQuotasMap = Partial<Record<PlatformType, PlatformQuotaLimits>>
 
-const PLATFORMS: PlatformType[] = ["anthropic", "openai", "gemini", "antigravity", "kiro", "grok"]
+const PLATFORMS: readonly PlatformType[] = PLATFORM_QUOTA_PLATFORMS
 
 export type SchedulingThresholdPlatformType =
   | "openai"

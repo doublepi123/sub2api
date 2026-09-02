@@ -7,6 +7,7 @@ import enSettings from "@/i18n/locales/en/admin/settings";
 import zhCommon from "@/i18n/locales/zh/common";
 import zhSettings from "@/i18n/locales/zh/admin/settings";
 import SettingsView from "../SettingsView.vue";
+import { PLATFORM_QUOTA_PLATFORMS } from "@/constants/platforms";
 
 const {
   getSettings,
@@ -1877,7 +1878,7 @@ describe("admin SettingsView platform quota matrix", () => {
     // 应携带嵌套对象，而非扁平字段
     expect(payload).toHaveProperty("default_platform_quotas");
     const quotas = payload["default_platform_quotas"] as Record<string, unknown>;
-    const platforms = ["anthropic", "openai", "gemini", "antigravity", "kiro", "grok"];
+    const platforms = PLATFORM_QUOTA_PLATFORMS;
     for (const p of platforms) {
       expect(quotas).toHaveProperty(p);
       const pq = quotas[p] as Record<string, unknown>;

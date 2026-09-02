@@ -120,6 +120,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import type { AdminUser, PlatformQuotaItem, PlatformQuotaPlatform, PlatformQuotaWindow } from '@/types'
+import { PLATFORM_QUOTA_PLATFORMS } from '@/constants/platforms'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 
 const props = defineProps<{ show: boolean; user: AdminUser | null }>()
@@ -128,7 +129,7 @@ const emit = defineEmits(['close', 'success'])
 const { t } = useI18n()
 const appStore = useAppStore()
 
-const PLATFORMS: PlatformQuotaPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'kiro', 'grok']
+const PLATFORMS: readonly PlatformQuotaPlatform[] = PLATFORM_QUOTA_PLATFORMS
 
 interface QuotaRow {
   platform: PlatformQuotaPlatform

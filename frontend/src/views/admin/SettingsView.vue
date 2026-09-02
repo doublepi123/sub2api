@@ -4054,7 +4054,7 @@
                       </tr>
                     </thead>
                     <tbody class="space-y-2">
-                      <tr v-for="p in (['anthropic', 'openai', 'gemini', 'antigravity', 'kiro', 'grok'] as const)" :key="p" class="align-top">
+                      <tr v-for="p in PLATFORM_QUOTA_PLATFORMS" :key="p" class="align-top">
                         <td class="pr-4 py-1">
                           <span class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ p }}</span>
                         </td>
@@ -4389,7 +4389,7 @@
                             </tr>
                           </thead>
                           <tbody>
-                            <tr v-for="p in (['anthropic', 'openai', 'gemini', 'antigravity', 'kiro', 'grok'] as const)" :key="`${authSource.source}-pq-${p}`" class="align-top">
+                            <tr v-for="p in PLATFORM_QUOTA_PLATFORMS" :key="`${authSource.source}-pq-${p}`" class="align-top">
                               <td class="pr-4 py-1">
                                 <span class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ p }}</span>
                               </td>
@@ -8823,6 +8823,7 @@ import {
 import TotpStepUpDialog from "@/components/auth/TotpStepUpDialog.vue";
 import { affiliatesAPI, type AffiliateAdminEntry, type SimpleUser as AffiliateSimpleUser } from "@/api/admin/affiliates";
 import { extractApiErrorMessage, extractI18nErrorMessage } from "@/utils/apiError";
+import { PLATFORM_QUOTA_PLATFORMS } from "@/constants/platforms";
 import { useAppStore } from "@/stores";
 import { useAdminSettingsStore } from "@/stores/adminSettings";
 import { normalizeVisibleMethod } from "@/components/payment/paymentFlow";
