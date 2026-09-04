@@ -478,24 +478,28 @@ func TestCalculateCost_LongContextAppliesMultiplierToCacheCreation5mAnd1h(t *tes
 		"both 5m and 1h cache_creation prices should be scaled by LongContextInputMultiplier")
 }
 
-// TestGemini38FlashPromoPricingExpiry 是一条日期绊线：Google 对 gemini-3.8-flash
-// 的促销价仅持续到 2026-12-31，2027-01-01 起官方价翻倍为 $1.50/$7.50/$0.15 per MTok。
-// 远程 LiteLLM 价格目录并不可靠地收录新 Flash 版本（gemini-3.7-flash 上线数周后
-// 仍无条目），因此 fallbackPrices 实际就是长期生效价；促销价到期后本测试会失败，
-// 强制更新，避免网关按半价长期少计费。
-func TestGemini38FlashPromoPricingExpiry(t *testing.T) {
+// TestGeminiFlashPromoPricingExpiry 是一条日期绊线：Google 对 gemini-3.7-flash 与
+// gemini-3.8-flash 的促销价均只持续到 2026-12-31，2027-01-01 起官方价翻倍为
+// $1.50/$7.50/$0.15 per MTok。远程 LiteLLM 价格目录并不可靠地收录新 Flash 版本
+// （gemini-3.7-flash 上线数周后目录里仍无条目），因此 fallbackPrices 实际就是长期
+// 生效价；促销价到期后本测试会失败，强制更新，避免网关按半价长期少计费。
+func TestGeminiFlashPromoPricingExpiry(t *testing.T) {
 	promoEnd := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	if timezone.Now().UTC().Before(promoEnd) {
-		t.Skip("Gemini 3.8 Flash 促销价仍在有效期内")
+		t.Skip("Gemini Flash 促销价仍在有效期内")
 	}
 
 	svc := newTestBillingService()
-	pricing := svc.getFallbackPricing("gemini-3.8-flash")
-	require.NotNil(t, pricing)
-	require.Equal(t, 1.5e-6, pricing.InputPricePerToken,
-		"Gemini 3.8 Flash 促销价已于 2026-12-31 到期，请把 fallback 更新为 $1.50/$7.50/$0.15 per MTok")
-	require.Equal(t, 7.5e-6, pricing.OutputPricePerToken)
-	require.Equal(t, 0.15e-6, pricing.CacheReadPricePerToken)
+	for _, model := range []string{"gemini-3.7-flash", "gemini-3.8-flash"} {
+		t.Run(model, func(t *testing.T) {
+			pricing := svc.getFallbackPricing(model)
+			require.NotNil(t, pricing)
+			require.Equal(t, 1.5e-6, pricing.InputPricePerToken,
+				"%s 促销价已于 2026-12-31 到期，请把 fallback 更新为 $1.50/$7.50/$0.15 per MTok", model)
+			require.Equal(t, 7.5e-6, pricing.OutputPricePerToken)
+			require.Equal(t, 0.15e-6, pricing.CacheReadPricePerToken)
+		})
+	}
 }
 
 func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
