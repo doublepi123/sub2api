@@ -118,6 +118,22 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('gemini-3.7-flash-tiered')
   })
 
+  it('gemini 模型列表包含 Gemini 3.8 Flash', () => {
+    const models = getModelsByPlatform('gemini')
+
+    expect(models).toContain('gemini-3.8-flash')
+  })
+
+  it('antigravity 模型列表包含 Gemini 3.8 Flash 推理档位', () => {
+    const models = getModelsByPlatform('antigravity')
+
+    expect(models).toContain('gemini-3.8-flash')
+    expect(models).toContain('gemini-3.8-flash-low')
+    expect(models).toContain('gemini-3.8-flash-medium')
+    expect(models).toContain('gemini-3.8-flash-high')
+    expect(models).toContain('gemini-3.8-flash-tiered')
+  })
+
   it('whitelist 模式会忽略通配符条目', () => {
     const mapping = buildModelMappingObject('whitelist', ['claude-*', 'gemini-3.1-flash-image'], [])
     expect(mapping).toEqual({
