@@ -14,6 +14,7 @@ func TestDefaultModels_ContainsImageModels(t *testing.T) {
 		"gemini-2.5-flash-image",
 		"gemini-3.1-flash-image",
 		"gemini-3.7-flash",
+		"gemini-3.8-flash",
 	}
 
 	for _, id := range required {

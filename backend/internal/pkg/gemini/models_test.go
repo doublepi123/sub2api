@@ -16,6 +16,7 @@ func TestDefaultModels_ContainsFallbackCatalogModels(t *testing.T) {
 		"models/gemini-3.1-pro-preview-customtools",
 		"models/gemini-3.1-flash-image",
 		"models/gemini-3.7-flash",
+		"models/gemini-3.8-flash",
 	}
 
 	for _, name := range required {

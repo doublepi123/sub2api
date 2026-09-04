@@ -434,6 +434,7 @@ func TestAccountGetModelMapping_AntigravityUpgradesLegacyGeminiFlashBareMappings
 			"model_mapping": map[string]any{
 				"gemini-3.6-flash": "gemini-3.6-flash",
 				"gemini-3.7-flash": "gemini-3.7-flash",
+				"gemini-3.8-flash": "gemini-3.8-flash",
 			},
 		},
 	}
@@ -445,6 +446,9 @@ func TestAccountGetModelMapping_AntigravityUpgradesLegacyGeminiFlashBareMappings
 	if got := mapping["gemini-3.7-flash"]; got != domain.AntigravityGemini37FlashDefaultModel {
 		t.Fatalf("expected legacy Gemini 3.7 bare mapping to upgrade to %q, got %q", domain.AntigravityGemini37FlashDefaultModel, got)
 	}
+	if got := mapping["gemini-3.8-flash"]; got != domain.AntigravityGemini38FlashDefaultModel {
+		t.Fatalf("expected legacy Gemini 3.8 bare mapping to upgrade to %q, got %q", domain.AntigravityGemini38FlashDefaultModel, got)
+	}
 	for _, model := range []string{
 		"gemini-3.6-flash-low",
 		"gemini-3.6-flash-medium",
@@ -454,6 +458,10 @@ func TestAccountGetModelMapping_AntigravityUpgradesLegacyGeminiFlashBareMappings
 		"gemini-3.7-flash-medium",
 		"gemini-3.7-flash-high",
 		"gemini-3.7-flash-tiered",
+		"gemini-3.8-flash-low",
+		"gemini-3.8-flash-medium",
+		"gemini-3.8-flash-high",
+		"gemini-3.8-flash-tiered",
 	} {
 		if got := mapping[model]; got != model {
 			t.Fatalf("expected tier model %q to pass through, got %q", model, got)
@@ -470,6 +478,7 @@ func TestAccountGetModelMapping_AntigravityPreservesGeminiFlashBareOverrides(t *
 			"model_mapping": map[string]any{
 				"gemini-3.6-flash": "custom-36",
 				"gemini-3.7-flash": "custom-37",
+				"gemini-3.8-flash": "custom-38",
 			},
 		},
 	}
@@ -480,6 +489,9 @@ func TestAccountGetModelMapping_AntigravityPreservesGeminiFlashBareOverrides(t *
 	}
 	if got := mapping["gemini-3.7-flash"]; got != "custom-37" {
 		t.Fatalf("expected Gemini 3.7 override to be preserved, got %q", got)
+	}
+	if got := mapping["gemini-3.8-flash"]; got != "custom-38" {
+		t.Fatalf("expected Gemini 3.8 override to be preserved, got %q", got)
 	}
 }
 
