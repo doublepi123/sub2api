@@ -1137,6 +1137,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		writeModelsList(c, platform, kiro.Models)
 		return
 	}
+	if platform == service.PlatformAntigravity {
+		writeModelsList(c, platform, defaultModelIDsForPlatform(platform))
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
