@@ -325,18 +325,18 @@ func newGroupLifecycleTestService(cache SchedulerCache, accounts AccountReposito
 }
 
 func expectedGroupLifecycleBuckets(groupID int64) []SchedulerBucket {
-	platforms := schedulerSnapshotPlatforms()
-	buckets := make([]SchedulerBucket, 0, len(schedulerCanonicalBuckets(groupID)))
-	for _, platform := range platforms {
-		buckets = append(buckets,
-			SchedulerBucket{GroupID: groupID, Platform: platform, Mode: SchedulerModeSingle},
-			SchedulerBucket{GroupID: groupID, Platform: platform, Mode: SchedulerModeForced},
-		)
+	return schedulerCanonicalBuckets(groupID)
+}
+
+func schedulerCanonicalAccountQueryCount() int {
+	count := 0
+	for _, platform := range schedulerSnapshotPlatforms() {
+		count++
 		if platform == PlatformAnthropic || platform == PlatformGemini {
-			buckets = append(buckets, SchedulerBucket{GroupID: groupID, Platform: platform, Mode: SchedulerModeMixed})
+			count++
 		}
 	}
-	return buckets
+	return count
 }
 
 func bucketStrings(buckets []SchedulerBucket) map[string]struct{} {
@@ -454,7 +454,7 @@ func TestSchedulerGroupLifecycleActiveReopensAndRebuildsAllCurrentBuckets(t *tes
 	require.NoError(t, err)
 	require.Contains(t, bucketStrings(registered), historical.String())
 	require.Len(t, cache.tokens(), len(current))
-	require.Equal(t, len(schedulerSnapshotPlatforms())+2, accounts.callCount())
+	require.Equal(t, schedulerCanonicalAccountQueryCount(), accounts.callCount())
 	require.Equal(t, 1, accounts.platformCallCount(PlatformOpenAI))
 	for _, bucket := range current {
 		_, published := cache.counts(bucket)
@@ -497,8 +497,8 @@ func TestSchedulerGroupLifecycleInactiveThenActiveAuthoritativelyReopens(t *test
 	groups.set(&Group{ID: groupID, Status: StatusActive, Hydrated: true}, nil)
 	require.NoError(t, svc.handleGroupEvent(context.Background(), ptrInt64(groupID), make(map[batchSeenKey]struct{})))
 
-	require.Len(t, cache.tokens(), len(expectedGroupLifecycleBuckets(groupID)))
-	require.Equal(t, len(schedulerSnapshotPlatforms())+2, accounts.callCount())
+	require.Len(t, cache.tokens(), schedulerCanonicalBucketCount())
+	require.Equal(t, schedulerCanonicalAccountQueryCount(), accounts.callCount())
 	for _, bucket := range expectedGroupLifecycleBuckets(groupID) {
 		_, published := cache.counts(bucket)
 		require.Equal(t, 1, published, bucket.String())
@@ -546,15 +546,16 @@ func TestSchedulerGroupLifecycleEpochPreventsABA(t *testing.T) {
 	groups.set(&Group{ID: groupID, Status: StatusActive, Hydrated: true}, nil)
 	require.NoError(t, svc.handleGroupEvent(context.Background(), ptrInt64(groupID), make(map[batchSeenKey]struct{})))
 	firstActiveTokens := cache.tokens()
-	require.Len(t, firstActiveTokens, len(expectedGroupLifecycleBuckets(groupID)))
+	canonicalCount := schedulerCanonicalBucketCount()
+	require.Len(t, firstActiveTokens, canonicalCount)
 
 	groups.set(&Group{ID: groupID, Status: StatusDisabled, Hydrated: true}, nil)
 	require.NoError(t, svc.handleGroupEvent(context.Background(), ptrInt64(groupID), make(map[batchSeenKey]struct{})))
 	groups.set(&Group{ID: groupID, Status: StatusActive, Hydrated: true}, nil)
 	require.NoError(t, svc.handleGroupEvent(context.Background(), ptrInt64(groupID), make(map[batchSeenKey]struct{})))
 	allTokens := cache.tokens()
-	require.Len(t, allTokens, 2*len(expectedGroupLifecycleBuckets(groupID)))
-	require.Greater(t, allTokens[len(firstActiveTokens)].Epoch, firstActiveTokens[0].Epoch)
+	require.Len(t, allTokens, 2*canonicalCount)
+	require.Greater(t, allTokens[canonicalCount].Epoch, firstActiveTokens[0].Epoch)
 	require.ErrorIs(t, cache.SetSnapshot(context.Background(), firstActiveTokens[0].Bucket, firstActiveTokens[0], nil), ErrSchedulerBucketWriteFenced)
 }
 
@@ -571,11 +572,11 @@ func TestSchedulerGroupLifecycleSeenIsIndependentAndDeduplicatesGroupEvents(t *t
 
 	require.NoError(t, svc.handleGroupEvent(context.Background(), ptrInt64(groupID), seen))
 	require.Equal(t, 1, groups.callCount())
-	require.Equal(t, len(schedulerSnapshotPlatforms())+2, accounts.callCount())
+	require.Equal(t, schedulerCanonicalAccountQueryCount(), accounts.callCount())
 	requireLifecycleSeen(t, seen, groupID)
 	require.NoError(t, svc.handleGroupEvent(context.Background(), ptrInt64(groupID), seen))
 	require.Equal(t, 1, groups.callCount())
-	require.Equal(t, len(schedulerSnapshotPlatforms())+2, accounts.callCount())
+	require.Equal(t, schedulerCanonicalAccountQueryCount(), accounts.callCount())
 }
 
 func TestSchedulerGroupLifecycleFailuresDoNotMarkSeen(t *testing.T) {
