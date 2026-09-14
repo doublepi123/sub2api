@@ -6,15 +6,23 @@ import (
 )
 
 // bumpKiroCredentialGenerationOnPrincipalChange invalidates a Kiro catalog when
-// a management update replaces an existing principal's refresh token. Token
-// refresh can rotate that token too, so refresh persistence must not call this.
+// a management update changes principal-identifying credentials. Automatic token
+// rotation bypasses this helper; an admin token write cannot prove continuity.
 func bumpKiroCredentialGenerationOnPrincipalChange(account *Account, previous map[string]any) {
 	if account == nil || account.Platform != PlatformKiro {
 		return
 	}
-	previousToken, _ := previous["refresh_token"].(string)
-	previousToken = strings.TrimSpace(previousToken)
-	if previousToken == "" || previousToken == strings.TrimSpace(account.GetCredential("refresh_token")) {
+	_, hasCatalog := account.Extra[kiroDetectedModelCatalogKey]
+	changed := false
+	for _, key := range []string{"refresh_token", "access_token", "client_id", "profile_arn", "auth_method", "provider"} {
+		before, _ := previous[key].(string)
+		before = strings.TrimSpace(before)
+		if before != strings.TrimSpace(account.GetCredential(key)) && (before != "" || hasCatalog) {
+			changed = true
+			break
+		}
+	}
+	if !changed {
 		return
 	}
 	generation := account.kiroCredentialGeneration() + 1
