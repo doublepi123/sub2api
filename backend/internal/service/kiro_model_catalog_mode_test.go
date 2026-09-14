@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -136,13 +137,88 @@ func TestGetKiroModelCatalogRuntime_ReadsSettings(t *testing.T) {
 	require.True(t, rt.EmergencyOff)
 }
 
-func TestGetKiroModelCatalogRuntime_DBErrorFallsBackToShadow(t *testing.T) {
+// TestGetKiroModelCatalogRuntime_DBErrorOnFirstBoot_FallsBackToShadow covers the
+// first-boot case: no successful read has EVER happened (cache empty), so a DB
+// error has no known-good policy to retain and must resolve to the documented
+// default {shadow, false}. A first-boot outage must NOT resolve to enforce
+// (that would turn a DB blip into a hard block).
+func TestGetKiroModelCatalogRuntime_DBErrorOnFirstBoot_FallsBackToShadow(t *testing.T) {
 	repo := &kiroCatalogRuntimeSettingRepo{err: errors.New("db down")}
 	svc := &SettingService{settingRepo: repo}
 
 	rt := svc.GetKiroModelCatalogRuntime(context.Background())
 	require.Equal(t, kiroCatalogModeShadow, rt.Mode, "DB error must never resolve to enforce or off")
 	require.False(t, rt.EmergencyOff)
+}
+
+// expireKiroRuntimeCache forces the cached entry to be expired without sleeping,
+// by moving its expiresAt into the past in place. Same-package test, no clock
+// injection exists in the production code, so direct cache manipulation is the
+// deterministic expiry mechanism (mirrors how _CachesWithinTTL observes the cache).
+func expireKiroRuntimeCache(t *testing.T, svc *SettingService) {
+	t.Helper()
+	entry, ok := svc.kiroModelCatalogRuntimeCache.Load().(*cachedKiroModelCatalogRuntime)
+	require.True(t, ok, "expected a cached runtime entry to expire")
+	require.NotNil(t, entry)
+	entry.expiresAt = time.Now().Add(-time.Second).UnixNano()
+}
+
+// TestGetKiroModelCatalogRuntime_DBError_KeepsLastKnownGood is the headline
+// regression: an operator has enabled enforce, the 60s cache expires, the next
+// settings read hits a DB blip. The gate MUST keep the last known-good enforce;
+// disabling a safety control must never be a side effect of a transient DB error.
+func TestGetKiroModelCatalogRuntime_DBError_KeepsLastKnownGood(t *testing.T) {
+	repo := &kiroCatalogRuntimeSettingRepo{vals: map[string]string{
+		SettingKeyKiroModelCatalogEnforcementMode: "enforce",
+	}}
+	svc := &SettingService{settingRepo: repo}
+
+	// Given: a successful read primes the cache with enforce (known-good).
+	primed := svc.GetKiroModelCatalogRuntime(context.Background())
+	require.Equal(t, kiroCatalogModeEnforce, primed.Mode)
+	require.Equal(t, int32(1), repo.calls.Load())
+
+	// And: the cache entry has expired and the DB now errors.
+	expireKiroRuntimeCache(t, svc)
+	repo.err = errors.New("db down")
+
+	// When: the runtime is resolved again.
+	rt := svc.GetKiroModelCatalogRuntime(context.Background())
+
+	// Then: the last known-good enforce is retained, not downgraded to shadow.
+	require.Equal(t, kiroCatalogModeEnforce, rt.Mode,
+		"transient DB error must not revoke an active enforce policy")
+	require.Equal(t, int32(2), repo.calls.Load())
+}
+
+// TestGetKiroModelCatalogRuntime_MissingKeysAreKnownGood: a successful read in
+// which BOTH keys are absent legitimately means "configured to defaults"
+// {shadow, false} and counts as known-good. A later DB error must therefore go
+// through the known-good retention path (still shadow), not the first-boot
+// fallback. The repo call count proves the second call actually hit the DB
+// error branch rather than serving an unexpired cache entry.
+func TestGetKiroModelCatalogRuntime_MissingKeysAreKnownGood(t *testing.T) {
+	repo := &kiroCatalogRuntimeSettingRepo{vals: map[string]string{}}
+	svc := &SettingService{settingRepo: repo}
+
+	// Given: a successful read with both keys absent => defaults, known-good.
+	primed := svc.GetKiroModelCatalogRuntime(context.Background())
+	require.Equal(t, kiroCatalogModeShadow, primed.Mode)
+	require.False(t, primed.EmergencyOff)
+	require.Equal(t, int32(1), repo.calls.Load())
+
+	// And: the cache entry expired and the DB now errors.
+	expireKiroRuntimeCache(t, svc)
+	repo.err = errors.New("db down")
+
+	// When: the runtime is resolved again.
+	rt := svc.GetKiroModelCatalogRuntime(context.Background())
+
+	// Then: still the defaults via the known-good path, and the second call
+	// really did reach the repo (expired cache -> DB attempt -> known-good keep).
+	require.Equal(t, kiroCatalogModeShadow, rt.Mode)
+	require.False(t, rt.EmergencyOff)
+	require.Equal(t, int32(2), repo.calls.Load())
 }
 
 func TestGetKiroModelCatalogRuntime_NilServiceIsSafe(t *testing.T) {
