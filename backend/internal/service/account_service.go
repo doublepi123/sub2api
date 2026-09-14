@@ -328,6 +328,7 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 		account.Notes = normalizeAccountNotes(req.Notes)
 	}
 
+	previousCredentials := shallowCopyMap(account.Credentials)
 	if req.Credentials != nil {
 		account.Credentials = SanitizeStoredCredentials(account.Platform, *req.Credentials)
 	}
@@ -340,6 +341,11 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 		delete(extra, OllamaCloudUsageSessionExtraKey)
 		delete(extra, OllamaCloudUsageAutoRefreshExtraKey)
 		delete(extra, OllamaCloudUsageSnapshotExtraKey)
+		for _, key := range []string{kiroDetectedModelCatalogKey, kiroCredentialGenerationKey} {
+			if value, ok := account.Extra[key]; ok {
+				extra[key] = value
+			}
+		}
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, extra)
 	} else {
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, account.Extra)
@@ -375,6 +381,7 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 	}
 
 	// 执行更新
+	bumpKiroCredentialGenerationOnPrincipalChange(account, previousCredentials)
 	if err := s.accountRepo.Update(ctx, account); err != nil {
 		return nil, fmt.Errorf("update account: %w", err)
 	}
