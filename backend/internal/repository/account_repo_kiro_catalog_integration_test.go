@@ -28,6 +28,10 @@ func TestUpdateKiroModelCatalogIfCurrent_Conditions(t *testing.T) {
 			// Given: use PostgreSQL, including literal SQL NULL and both JSON scalar shapes.
 			ctx := context.Background()
 			tx := testEntTx(t)
+			if tc.extra == nil {
+				_, err := tx.ExecContext(ctx, "ALTER TABLE accounts ALTER COLUMN extra DROP NOT NULL")
+				require.NoError(t, err)
+			}
 			repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
 			a := mustCreateAccount(t, tx.Client(), &service.Account{Name: tc.name})
 			_, err := tx.ExecContext(ctx, "UPDATE accounts SET extra = $1::jsonb WHERE id = $2", tc.extra, a.ID)

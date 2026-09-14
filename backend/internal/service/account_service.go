@@ -151,6 +151,7 @@ type AdminAccountRepository interface {
 	AccountRepository
 	AccountDuplicateRepository
 	AccountBillingSettingsRepository
+	KiroCredentialGenerationRepository
 }
 
 // AccountBulkUpdate describes the fields that can be updated in a bulk operation.
@@ -169,7 +170,8 @@ type AccountBulkUpdate struct {
 	ProbeEnabled   *bool
 	// EnsureCodexFingerprintSeed asks the repository to atomically preserve an
 	// existing valid Codex fingerprint seed or create one for eligible rows.
-	EnsureCodexFingerprintSeed bool
+	EnsureCodexFingerprintSeed   bool
+	BumpKiroCredentialGeneration bool
 }
 
 // CreateAccountRequest 创建账号请求
@@ -381,8 +383,12 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 	}
 
 	// 执行更新
-	bumpKiroCredentialGenerationOnPrincipalChange(account, previousCredentials)
-	if err := s.accountRepo.Update(ctx, account); err != nil {
+	if bumpKiroCredentialGenerationOnPrincipalChange(account, previousCredentials) {
+		err = updateWithKiroCredentialGeneration(ctx, s.accountRepo, account)
+	} else {
+		err = s.accountRepo.Update(ctx, account)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("update account: %w", err)
 	}
 

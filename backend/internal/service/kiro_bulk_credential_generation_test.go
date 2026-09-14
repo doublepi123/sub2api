@@ -39,8 +39,12 @@ func (r *kiroBulkCredentialRepo) BulkUpdate(_ context.Context, ids []int64, upda
 	var count int64
 	for _, id := range ids {
 		if account := r.accounts[id]; account != nil {
+			generation := account.kiroCredentialGeneration()
 			account.Credentials = mergeMap(account.Credentials, updates.Credentials)
 			account.Extra = mergeMap(account.Extra, updates.Extra)
+			if updates.BumpKiroCredentialGeneration && account.Platform == PlatformKiro && len(updates.Credentials) > 0 {
+				account.Extra[kiroCredentialGenerationKey] = generation + 1
+			}
 			if updates.Schedulable != nil {
 				account.Schedulable = *updates.Schedulable
 			}

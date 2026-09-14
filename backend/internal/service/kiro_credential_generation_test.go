@@ -30,7 +30,7 @@ func TestBumpKiroCredentialGeneration_SameRefreshToken_NoBump(t *testing.T) {
 	previous["refresh_token"] = "  PAID-REFRESH\n"
 
 	// When
-	bumpKiroCredentialGenerationOnPrincipalChange(account, previous)
+	applyKiroPrincipalChangeForTest(t, account, previous)
 
 	// Then
 	require.Equal(t, int64(7), account.kiroCredentialGeneration())
@@ -41,7 +41,7 @@ func TestBumpKiroCredentialGeneration_NonKiroPlatformIgnored(t *testing.T) {
 	account := &Account{Platform: PlatformOpenAI, Credentials: map[string]any{"refresh_token": "new"}}
 
 	// When
-	bumpKiroCredentialGenerationOnPrincipalChange(account, map[string]any{"refresh_token": "old"})
+	applyKiroPrincipalChangeForTest(t, account, map[string]any{"refresh_token": "old"})
 
 	// Then
 	require.Nil(t, account.Extra)
@@ -53,7 +53,7 @@ func TestBumpKiroCredentialGeneration_FirstWrite_NoBump(t *testing.T) {
 		account := &Account{Platform: PlatformKiro, Credentials: map[string]any{"refresh_token": "first"}}
 
 		// When
-		bumpKiroCredentialGenerationOnPrincipalChange(account, previous)
+		applyKiroPrincipalChangeForTest(t, account, previous)
 
 		// Then
 		require.Nil(t, account.Extra)
@@ -65,7 +65,7 @@ func TestBumpKiroCredentialGeneration_Replacement_CreatesExtra(t *testing.T) {
 	account := &Account{Platform: PlatformKiro, Credentials: map[string]any{"refresh_token": "new"}}
 
 	// When
-	bumpKiroCredentialGenerationOnPrincipalChange(account, map[string]any{"refresh_token": "old"})
+	applyKiroPrincipalChangeForTest(t, account, map[string]any{"refresh_token": "old"})
 
 	// Then
 	require.Equal(t, int64(1), account.Extra[kiroCredentialGenerationKey])

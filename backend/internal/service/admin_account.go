@@ -840,8 +840,13 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 	}
 
-	bumpKiroCredentialGenerationOnPrincipalChange(account, previousCredentials)
 	billingSettingsAppliedAtomically := false
+	if bumpKiroCredentialGenerationOnPrincipalChange(account, previousCredentials) {
+		if err := updateWithKiroCredentialGeneration(ctx, s.accountRepo, account); err != nil {
+			return nil, err
+		}
+		billingSettingsAppliedAtomically = true
+	}
 	updater := s.accountBillingRepo
 	if updater == nil {
 		// Unit tests and narrow internal callers may construct adminServiceImpl
@@ -849,7 +854,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		// AdminAccountRepository.
 		updater, _ = s.accountRepo.(AccountBillingSettingsRepository)
 	}
-	if updater != nil {
+	if updater != nil && !billingSettingsAppliedAtomically {
 		if err := updater.UpdateWithAccountBillingSettings(
 			ctx,
 			account,
@@ -1154,18 +1159,12 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		updated := *account
 		updated.Credentials = mergeMap(account.Credentials, input.Credentials)
 		updated.Extra = shallowCopyMap(account.Extra)
-		bumpKiroCredentialGenerationOnPrincipalChange(&updated, account.Credentials)
 		accountUpdates := repoUpdates
+		accountUpdates.BumpKiroCredentialGeneration = bumpKiroCredentialGenerationOnPrincipalChange(&updated, account.Credentials)
 		accountUpdates.Extra = shallowCopyMap(repoUpdates.Extra)
 		// The bulk JSONB patch must not overwrite server-managed catalog state.
 		delete(accountUpdates.Extra, kiroDetectedModelCatalogKey)
 		delete(accountUpdates.Extra, kiroCredentialGenerationKey)
-		if updated.kiroCredentialGeneration() != account.kiroCredentialGeneration() {
-			if accountUpdates.Extra == nil {
-				accountUpdates.Extra = make(map[string]any)
-			}
-			accountUpdates.Extra[kiroCredentialGenerationKey] = updated.kiroCredentialGeneration()
-		}
 		if _, err := s.accountRepo.BulkUpdate(ctx, []int64{accountID}, accountUpdates); err != nil {
 			return nil, err
 		}

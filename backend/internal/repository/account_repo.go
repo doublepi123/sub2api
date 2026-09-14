@@ -437,7 +437,7 @@ func (r *accountRepository) ListCRSAccountIDs(ctx context.Context) (map[string]i
 }
 
 func (r *accountRepository) Update(ctx context.Context, account *service.Account) error {
-	return r.updateAccount(ctx, account, nil, nil, account.RateMultiplier)
+	return r.updateAccount(ctx, account, nil, nil, account.RateMultiplier, false)
 }
 
 // UpdateWithAccountBillingSettings applies an admin account edit while
@@ -450,7 +450,7 @@ func (r *accountRepository) UpdateWithAccountBillingSettings(
 	rateSyncEnabled *bool,
 	rateMultiplier *float64,
 ) error {
-	return r.updateAccount(ctx, account, probeEnabled, rateSyncEnabled, rateMultiplier)
+	return r.updateAccount(ctx, account, probeEnabled, rateSyncEnabled, rateMultiplier, false)
 }
 
 func (r *accountRepository) updateAccount(
@@ -459,6 +459,7 @@ func (r *accountRepository) updateAccount(
 	explicitProbeEnabled *bool,
 	explicitRateSyncEnabled *bool,
 	explicitRateMultiplier *float64,
+	bumpKiroGeneration bool,
 ) error {
 	if account == nil {
 		return nil
@@ -490,6 +491,7 @@ func (r *accountRepository) updateAccount(
 		explicitProbeEnabled,
 		explicitRateSyncEnabled,
 		explicitRateMultiplier,
+		bumpKiroGeneration,
 	)
 	if err != nil {
 		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
@@ -504,6 +506,7 @@ func (r *accountRepository) updateAccount(
 	}
 
 	account.UpdatedAt = updated.UpdatedAt
+	account.Extra = updated.Extra
 	// 普通账号编辑（如 model_mapping / credentials）也需要立即刷新单账号快照，
 	// 否则网关在 outbox worker 延迟或异常时仍可能读到旧配置。
 	if contextTx == nil {
@@ -519,6 +522,7 @@ func (r *accountRepository) updateLockedAccount(
 	explicitProbeEnabled *bool,
 	explicitRateSyncEnabled *bool,
 	explicitRateMultiplier *float64,
+	bumpKiroGeneration bool,
 ) (*dbent.Account, error) {
 	extra, err := lockAndMergeAccountProbeExtra(ctx, client, account, explicitProbeEnabled, explicitRateSyncEnabled)
 	if err != nil {
@@ -536,14 +540,15 @@ func (r *accountRepository) updateLockedAccount(
 		SetNillableNotes(account.Notes).
 		SetPlatform(account.Platform).
 		SetType(account.Type).
-		SetCredentials(normalizeJSONMap(account.Credentials)).
-		SetExtra(extra).
 		SetConcurrency(account.Concurrency).
 		SetPriority(account.Priority).
 		SetStatus(account.Status).
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
+	if account.Platform != service.PlatformKiro {
+		builder.SetCredentials(normalizeJSONMap(account.Credentials)).SetExtra(extra)
+	}
 
 	if explicitRateMultiplier != nil {
 		builder.SetRateMultiplier(*explicitRateMultiplier)
@@ -606,7 +611,17 @@ func (r *accountRepository) updateLockedAccount(
 	builder.SetQuotaDimension(dbaccount.QuotaDimension(account.QuotaDimensionOrDefault()))
 	builder.SetNillableParentAccountID(account.ParentAccountID)
 
-	return builder.Save(ctx)
+	updated, err := builder.Save(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if account.Platform == service.PlatformKiro {
+		updated.Extra, err = writeKiroAccountCredentials(ctx, client, account, bumpKiroGeneration)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return updated, nil
 }
 
 func lockAndMergeAccountProbeExtra(
@@ -2856,6 +2871,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		return 0, nil
 	}
 	updates.Extra = stripCodexFingerprintSeedFromExtraUpdate(updates.Extra)
+	updates.Extra = stripKiroManagedExtra(updates.Extra)
 
 	setClauses := make([]string, 0, 8)
 	args := make([]any, 0, 8)
@@ -2943,7 +2959,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 				" AND "+ollamaCloudBaseURLMatchesSQL(credentialPlaceholder+"::jsonb ->> 'base_url'")+")")
 	}
 
-	if len(updates.Extra) > 0 || len(ollamaGroupIdentityChanges) > 0 || ollamaProxyIdentityChanged != "" || updates.EnsureCodexFingerprintSeed {
+	if len(updates.Extra) > 0 || len(ollamaGroupIdentityChanges) > 0 || ollamaProxyIdentityChanged != "" || updates.EnsureCodexFingerprintSeed || len(updates.Credentials) > 0 {
 		extraExpression := "COALESCE(extra, '{}'::jsonb)"
 		if len(updates.Extra) > 0 {
 			payload, err := json.Marshal(updates.Extra)
@@ -2984,6 +3000,13 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		}
 		if updates.EnsureCodexFingerprintSeed {
 			extraExpression = ensureCodexFingerprintSeedSQL(extraExpression)
+		}
+		if len(updates.Credentials) > 0 {
+			changed := "TRUE"
+			if !updates.BumpKiroCredentialGeneration {
+				changed = kiroStoredPrincipalChangedSQL("COALESCE(credentials, '{}'::jsonb) || " + credentialPlaceholder + "::jsonb")
+			}
+			extraExpression = "CASE WHEN platform = 'kiro' AND (" + changed + ") THEN " + bumpKiroGenerationSQL(extraExpression) + " ELSE (" + extraExpression + ") END"
 		}
 		setClauses = append(setClauses, "extra = "+extraExpression)
 	}
@@ -3056,7 +3079,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		}
 	}
 	if rows > 0 && contextTx == nil {
-		shouldSync := false
+		shouldSync := len(updates.Credentials) > 0
 		if updates.Status != nil && (*updates.Status == service.StatusError || *updates.Status == service.StatusDisabled) {
 			shouldSync = true
 		}

@@ -17,7 +17,7 @@ func TestBumpKiroCredentialGeneration_AccessTokenOnlyReplacement_Bumps(t *testin
 	account.Credentials["access_token"] = "FREE-ACCESS"
 
 	// When
-	bumpKiroCredentialGenerationOnPrincipalChange(account, previous)
+	applyKiroPrincipalChangeForTest(t, account, previous)
 
 	// Then
 	require.Equal(t, int64(1), account.kiroCredentialGeneration())
@@ -28,7 +28,7 @@ func TestBumpKiroCredentialGeneration_FirstWriteWithExistingCatalog_Bumps(t *tes
 	account := kiroPrincipalReplacementAccount()
 
 	// When
-	bumpKiroCredentialGenerationOnPrincipalChange(account, nil)
+	applyKiroPrincipalChangeForTest(t, account, nil)
 
 	// Then
 	require.Equal(t, int64(1), account.kiroCredentialGeneration())
@@ -48,7 +48,7 @@ func TestBumpKiroCredentialGeneration_PrincipalFields_Bumps(t *testing.T) {
 				account.Credentials[key] = value
 
 				// When
-				bumpKiroCredentialGenerationOnPrincipalChange(account, previous)
+				applyKiroPrincipalChangeForTest(t, account, previous)
 
 				// Then
 				require.Equal(t, int64(1), account.kiroCredentialGeneration())
