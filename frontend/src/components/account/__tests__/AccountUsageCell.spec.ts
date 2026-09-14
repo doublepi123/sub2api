@@ -359,6 +359,103 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).toContain('977.03')
   })
 
+  async function mountKiroAccount(extra: Account['extra']) {
+    getUsage.mockResolvedValue({})
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 1102, platform: 'kiro', type: 'oauth', extra })
+      },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    return wrapper
+  }
+
+  async function mountKiroTierBadge(extra: Account['extra']) {
+    const wrapper = await mountKiroAccount(extra)
+    return wrapper.get('[data-testid="kiro-effective-tier-badge"]')
+  }
+
+  async function mountKiroCatalogBadge(extra: Account['extra']) {
+    const wrapper = await mountKiroAccount(extra)
+    return wrapper.get('[data-testid="kiro-model-catalog-badge"]')
+  }
+
+  const FREE_CATALOG_MODEL_IDS = [
+    'auto',
+    'claude-haiku-4.5',
+    'claude-sonnet-4',
+    'claude-sonnet-4.5',
+    'deepseek-3.2',
+    'glm-5',
+    'minimax-m2.1',
+    'minimax-m2.5',
+    'qwen3-coder-next'
+  ]
+
+  function makeCatalog(overrides: Record<string, unknown> = {}) {
+    return {
+      schema_version: 1,
+      source: 'kiro_list_available_models',
+      state: 'ready',
+      model_ids: FREE_CATALOG_MODEL_IDS,
+      scope_fingerprint: 'fp-free',
+      last_success_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      last_attempt_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      last_error_code: '',
+      ...overrides
+    }
+  }
+
+  it('Kiro 仅有自动检测档位时按检测值展示', async () => {
+    const badge = await mountKiroTierBadge({ kiro_sched_tier: 'free' })
+
+    expect(badge.text()).toBe('admin.accounts.usageWindow.kiroTierFree')
+    expect(badge.attributes('title')).toBe(
+      'admin.accounts.usageWindow.kiroTier: admin.accounts.usageWindow.kiroTierFree'
+    )
+  })
+
+  it('Kiro 档位未知时回落到 Unknown 徽章', async () => {
+    const badge = await mountKiroTierBadge({})
+
+    expect(badge.text()).toBe('admin.accounts.usageWindow.kiroTierUnknown')
+  })
+
+  it('Kiro 新鲜的免费目录渲染 9 models 与 ready 状态', async () => {
+    const badge = await mountKiroCatalogBadge({
+      kiro_sched_tier: 'free',
+      detected_model_catalog: makeCatalog()
+    })
+
+    expect(badge.text()).toContain('9 admin.accounts.usageWindow.kiroCatalogModels')
+    expect(badge.text()).toContain('admin.accounts.usageWindow.kiroCatalogReady')
+    expect(badge.text()).toContain('2h')
+    expect(badge.attributes('title')).toContain('claude-haiku-4.5')
+    expect(badge.attributes('title')).toContain('qwen3-coder-next')
+  })
+
+  it('Kiro 25 小时前成功的目录渲染 expired 状态', async () => {
+    const badge = await mountKiroCatalogBadge({
+      detected_model_catalog: makeCatalog({
+        state: 'expired',
+        last_success_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()
+      })
+    })
+
+    expect(badge.text()).toContain('admin.accounts.usageWindow.kiroCatalogExpired')
+    expect(badge.text()).toContain('25h')
+  })
+
+  it('Kiro 缺少 detected_model_catalog 时渲染 unknown 且不显示 0 models', async () => {
+    const badge = await mountKiroCatalogBadge({ kiro_sched_tier: 'free' })
+
+    expect(badge.text()).toContain('admin.accounts.usageWindow.kiroCatalogUnknown')
+    expect(badge.text()).not.toContain('0 admin.accounts.usageWindow.kiroCatalogModels')
+  })
+
 
   it('OpenAI OAuth 快照已过期时首屏会重新请求 usage', async () => {
     getUsage.mockResolvedValue({

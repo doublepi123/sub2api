@@ -566,14 +566,35 @@
 
     <!-- Kiro OAuth accounts: official subscription credits from GetUsageLimits -->
     <template v-else-if="account.platform === 'kiro' && account.type === 'oauth'">
-      <div v-if="kiroPlanLabel" class="mb-1 flex items-center gap-1">
+      <div class="mb-1 flex flex-wrap items-center gap-1">
         <span
+          v-if="kiroPlanLabel"
           :class="[
             'inline-block rounded px-1.5 py-0.5 text-[10px] font-medium',
             kiroPlanClass
           ]"
         >
           {{ kiroPlanLabel }}
+        </span>
+        <span
+          data-testid="kiro-effective-tier-badge"
+          :title="kiroEffectiveTierTitle"
+          :class="[
+            'inline-block rounded px-1.5 py-0.5 text-[10px] font-medium',
+            kiroEffectiveTierClass
+          ]"
+        >
+          {{ kiroEffectiveTierLabel }}
+        </span>
+        <span
+          data-testid="kiro-model-catalog-badge"
+          :title="kiroCatalogTitle"
+          :class="[
+            'inline-block rounded px-1.5 py-0.5 text-[10px] font-medium',
+            kiroCatalogClass
+          ]"
+        >
+          {{ kiroCatalogLabel }}
         </span>
       </div>
 
@@ -721,7 +742,15 @@
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
+import type {
+  Account,
+  AccountUsageInfo,
+  GeminiCredentials,
+  KiroModelCatalog,
+  KiroModelCatalogState,
+  KiroSchedTier,
+  WindowStats
+} from '@/types'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
@@ -1232,6 +1261,85 @@ const kiroPlanClass = computed(() => {
     return 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300'
   }
   return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+})
+
+const kiroEffectiveTier = computed<KiroSchedTier | ''>(() => {
+  const extra = props.account.extra
+  if (extra?.kiro_sched_tier === 'free' || extra?.kiro_sched_tier === 'paid') {
+    return extra.kiro_sched_tier
+  }
+  return ''
+})
+
+const KIRO_TIER_LABEL_KEYS: Record<KiroSchedTier | '', string> = {
+  free: 'admin.accounts.usageWindow.kiroTierFree',
+  paid: 'admin.accounts.usageWindow.kiroTierPaid',
+  '': 'admin.accounts.usageWindow.kiroTierUnknown'
+}
+
+const KIRO_TIER_CLASSES: Record<KiroSchedTier | '', string> = {
+  paid: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+  free: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  '': 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+}
+
+const kiroEffectiveTierLabel = computed(() => t(KIRO_TIER_LABEL_KEYS[kiroEffectiveTier.value]))
+
+const kiroEffectiveTierClass = computed(() => KIRO_TIER_CLASSES[kiroEffectiveTier.value])
+
+const kiroEffectiveTierTitle = computed(
+  () => `${t('admin.accounts.usageWindow.kiroTier')}: ${kiroEffectiveTierLabel.value}`
+)
+
+const kiroModelCatalog = computed<KiroModelCatalog | null>(() => props.account.extra?.detected_model_catalog ?? null)
+
+const KIRO_CATALOG_STATE_LABEL_KEYS: Record<KiroModelCatalogState, string> = {
+  ready: 'admin.accounts.usageWindow.kiroCatalogReady',
+  unknown: 'admin.accounts.usageWindow.kiroCatalogUnknown',
+  expired: 'admin.accounts.usageWindow.kiroCatalogExpired'
+}
+
+const KIRO_CATALOG_STATE_CLASSES: Record<KiroModelCatalogState, string> = {
+  ready: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+  unknown: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+  expired: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+}
+
+const kiroCatalogState = computed<KiroModelCatalogState>(() => {
+  const state = kiroModelCatalog.value?.state
+  return state === 'ready' || state === 'expired' ? state : 'unknown'
+})
+
+const kiroCatalogClass = computed(() => KIRO_CATALOG_STATE_CLASSES[kiroCatalogState.value])
+
+const kiroCatalogAge = computed(() => {
+  const lastSuccessAt = kiroModelCatalog.value?.last_success_at
+  if (!lastSuccessAt) return ''
+  const elapsedMs = Date.now() - new Date(lastSuccessAt).getTime()
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return ''
+  const hours = Math.floor(elapsedMs / 3_600_000)
+  if (hours < 1) return `${Math.max(1, Math.floor(elapsedMs / 60_000))}m`
+  if (hours < 48) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+})
+
+const kiroCatalogLabel = computed(() => {
+  const stateLabel = t(KIRO_CATALOG_STATE_LABEL_KEYS[kiroCatalogState.value])
+  const catalog = kiroModelCatalog.value
+  if (!catalog) return stateLabel
+  const segments = [`${catalog.model_ids.length} ${t('admin.accounts.usageWindow.kiroCatalogModels')}`, stateLabel]
+  if (kiroCatalogAge.value) segments.push(kiroCatalogAge.value)
+  return segments.join(' · ')
+})
+
+const kiroCatalogTitle = computed(() => {
+  const catalog = kiroModelCatalog.value
+  const lines = [`${t('admin.accounts.usageWindow.kiroCatalog')}: ${kiroCatalogLabel.value}`]
+  if (kiroCatalogAge.value) {
+    lines.push(t('admin.accounts.usageWindow.kiroCatalogAge', { age: kiroCatalogAge.value }))
+  }
+  if (catalog && catalog.model_ids.length > 0) lines.push(...catalog.model_ids)
+  return lines.join('\n')
 })
 
 const formatKiroCredits = (value: number) => {

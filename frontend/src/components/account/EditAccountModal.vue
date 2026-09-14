@@ -95,6 +95,20 @@
           </div>
         </div>
         <p class="input-hint">{{ isKiroSocialAccount ? t('admin.accounts.kiro.socialHint') : t('admin.accounts.kiro.editSecretsHint') }}</p>
+
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <div class="flex items-center justify-between gap-4">
+            <label class="input-label mb-0">{{ t('admin.accounts.usageWindow.kiroCatalogMode') }}</label>
+            <div class="w-44 flex-shrink-0">
+              <Select
+                v-model="kiroModelCatalogMode"
+                data-testid="edit-kiro-model-catalog-mode"
+                :options="kiroModelCatalogModeOptions"
+              />
+            </div>
+          </div>
+          <p class="input-hint break-words leading-relaxed">{{ t('admin.accounts.usageWindow.kiroCatalogModeHint') }}</p>
+        </div>
       </div>
 
       <!-- API Key fields (only for apikey type) -->
@@ -3106,6 +3120,7 @@ import type {
   OpenAICompactMode,
   OpenAIResponsesMode,
   OpenAIEndpointCapability,
+  KiroModelCatalogMode,
   OllamaCloudUsageState,
   GrokMediaEligibilityMode,
   GrokMediaEligibilityState
@@ -3552,6 +3567,10 @@ const readUpstreamRequestIdHeader = (extra: unknown): string => {
   const value = (extra as Record<string, unknown> | undefined)?.upstream_request_id_header
   return typeof value === 'string' ? value : ''
 }
+const readKiroModelCatalogMode = (extra: unknown): KiroModelCatalogMode => {
+  const value = (extra as Record<string, unknown> | undefined)?.kiro_model_catalog_mode
+  return value === 'off' || value === 'shadow' || value === 'enforce' ? value : ''
+}
 const allowOverages = ref(false) // For antigravity accounts: enable AI Credits overages
 const antigravityProjectId = ref('')
 const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
@@ -3614,6 +3633,8 @@ const openAILongContextBillingEnabled = ref(false)
 // 存于 credentials.plan_type;'' 表示清空/自动识别
 const editPlanType = ref<string>('')
 const openAICompactMode = ref<OpenAICompactMode>('auto')
+// Kiro 模型目录门禁模式，存于 extra.kiro_model_catalog_mode;'' 表示跟随平台默认
+const kiroModelCatalogMode = ref<KiroModelCatalogMode>('')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 // Images 非流式响应缺 b64_json 时由网关下载 url 回填（仅 OpenAI API Key）。
 const openAIImagesUrlToB64JsonEnabled = ref(false)
@@ -3750,6 +3771,12 @@ const openAICompactModeOptions = computed(() => [
   { value: 'auto', label: t('admin.accounts.openai.compactModeAuto') },
   { value: 'force_on', label: t('admin.accounts.openai.compactModeForceOn') },
   { value: 'force_off', label: t('admin.accounts.openai.compactModeForceOff') }
+])
+const kiroModelCatalogModeOptions = computed(() => [
+  { value: '', label: t('admin.accounts.usageWindow.kiroCatalogModeInherit') },
+  { value: 'off', label: t('admin.accounts.usageWindow.kiroCatalogModeOff') },
+  { value: 'shadow', label: t('admin.accounts.usageWindow.kiroCatalogModeShadow') },
+  { value: 'enforce', label: t('admin.accounts.usageWindow.kiroCatalogModeEnforce') }
 ])
 // OpenAI 订阅档位手动覆盖选项(清空 + Plus/Pro/Free;别名/自定义值友好显示且保留 canonical)
 const planTypeOptions = computed(() =>
@@ -4089,6 +4116,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	openAIImagesUrlToB64JsonEnabled.value = extra?.images_url_to_b64_json === true
 	autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
 	autoPause7dThreshold.value = typeof extra?.auto_pause_7d_threshold === 'number' ? extra.auto_pause_7d_threshold * 100 : null
+	kiroModelCatalogMode.value = readKiroModelCatalogMode(extra)
 	autoPause5hDisabled.value = extra?.auto_pause_5h_disabled === true
 	autoPause7dDisabled.value = extra?.auto_pause_7d_disabled === true
 	autoResetCreditEnabled.value = extra?.auto_reset_credit_enabled === true
@@ -5112,6 +5140,12 @@ const handleSubmit = async () => {
       if (editKiroClientId.value.trim()) newCredentials.client_id = editKiroClientId.value.trim()
       if (editKiroClientSecret.value.trim()) newCredentials.client_secret = editKiroClientSecret.value.trim()
       updatePayload.credentials = newCredentials
+
+      // 后端以 JSONB `||` 合并 extra，省略键不会删除旧值，因此 '' 也必须显式落键，
+      // 否则管理员永远无法把模式改回跟随平台默认。
+      const currentExtra = (updatePayload.extra as Record<string, unknown>) ||
+        (props.account.extra as Record<string, unknown>) || {}
+      updatePayload.extra = { ...currentExtra, kiro_model_catalog_mode: kiroModelCatalogMode.value }
     }
 
     // For apikey type, handle credentials update
