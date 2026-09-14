@@ -136,6 +136,10 @@ type SettingService struct {
 	cyberSessionBlockRuntimeCache atomic.Value // *cachedCyberSessionBlockRuntime
 	cyberSessionBlockRuntimeSF    singleflight.Group
 
+	// kiroModelCatalogRuntimeCache Kiro 模型目录门控运行时配置缓存（*cachedKiroModelCatalogRuntime）。
+	kiroModelCatalogRuntimeCache atomic.Value
+	kiroModelCatalogRuntimeSF    singleflight.Group
+
 	// panelRateLimitCache 面板 API 限流配置进程内缓存（*cachedPanelRateLimitSettings）。
 	// 面板每个认证请求都会读取，禁止在热路径上直接访问 DB。
 	panelRateLimitCache atomic.Value

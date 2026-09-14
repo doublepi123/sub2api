@@ -3,6 +3,8 @@ package service
 import (
 	"net/http"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 var upstreamModelNotFoundKeywords = []string{"model not found", "unknown model", "not found"}
@@ -30,6 +32,13 @@ func isModelNotFoundError(statusCode int, body []byte) bool {
 // error.message-style payloads.
 const openAICodexPlanGatedModelPhrase = "model is not supported when using codex"
 
+// kiroInsufficientSubscriptionLevelPhrase matches the deterministic Kiro 400 returned
+// when a Kiro account's plan cannot serve the requested model, e.g.
+// {"message":"Invalid model ID or insufficient subscription level to use it.","reason":"INVALID_MODEL_ID"}
+// The phrase is compared against the normalized body (lowercased, "_"/"-"
+// folded to spaces), so it avoids underscore folding issues.
+const kiroInsufficientSubscriptionLevelPhrase = "insufficient subscription level"
+
 // isOpenAICodexPlanGatedModelError reports whether the upstream response is the
 // deterministic Codex rejection of a plan-gated model on a ChatGPT account.
 // Unlike transient failures, retrying the same account cannot succeed until the
@@ -44,6 +53,22 @@ func isOpenAICodexPlanGatedModelError(statusCode int, body []byte) bool {
 		return false
 	}
 	return strings.Contains(normalized, openAICodexPlanGatedModelPhrase)
+}
+
+// isKiroInvalidModelIDError reports whether the upstream response is the
+// deterministic Kiro rejection of a plan-gated model or invalid model ID on a Kiro account.
+func isKiroInvalidModelIDError(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest {
+		return false
+	}
+	if gjson.GetBytes(body, "reason").String() == "INVALID_MODEL_ID" {
+		return true
+	}
+	normalized := normalizeModelNotFoundBody(body)
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, kiroInsufficientSubscriptionLevelPhrase)
 }
 
 func containsModelNotFoundKeyword(normalizedBody string) bool {

@@ -150,6 +150,81 @@ const cyberSessionBlockRuntimeCacheTTL = 60 * time.Second
 const cyberSessionBlockRuntimeErrorTTL = 5 * time.Second
 const cyberSessionBlockRuntimeDBTimeout = 5 * time.Second
 
+// cachedKiroModelCatalogRuntime Kiro 模型目录门控运行时配置进程内缓存（60s TTL）。
+// GetKiroModelCatalogRuntime 在调度热路径上被调用，避免每次访问 DB。
+type cachedKiroModelCatalogRuntime struct {
+	runtime   KiroModelCatalogRuntime
+	expiresAt int64 // unix nano
+}
+
+const kiroModelCatalogRuntimeCacheTTL = 60 * time.Second
+const kiroModelCatalogRuntimeErrorTTL = 5 * time.Second
+const kiroModelCatalogRuntimeDBTimeout = 5 * time.Second
+
+// kiroModelCatalogRuntimeFallback 失败姿态：任何读取/解析失败都回退到这里。
+// 必须是 shadow 而非 enforce（DB 抖动不应拒绝流量），也不能是 off（不应静默关闭门控）。
+var kiroModelCatalogRuntimeFallback = KiroModelCatalogRuntime{Mode: kiroCatalogModeShadow, EmergencyOff: false}
+
+// GetKiroModelCatalogRuntime 返回 Kiro 模型目录门控的平台级配置，进程内缓存 ~60s，
+// 供调度热路径读取时避免 DB 往返。两个 setting key 在单次 singleflight 里用一次
+// GetMultiple 读取；缺失键（GetMultiple 对不存在的键不报错，直接缺席，等价于
+// ErrSettingNotFound）按文档默认值 shadow/false 处理。
+// 默认值：模式 shadow，紧急关闭 false。nil service / nil repo 安全（调度器单测以
+// nil settingService 构造 GatewayService）。
+func (s *SettingService) GetKiroModelCatalogRuntime(ctx context.Context) KiroModelCatalogRuntime {
+	if s == nil || s.settingRepo == nil {
+		return kiroModelCatalogRuntimeFallback
+	}
+	if cached, ok := s.kiroModelCatalogRuntimeCache.Load().(*cachedKiroModelCatalogRuntime); ok && cached != nil {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.runtime
+		}
+	}
+	result, _, _ := s.kiroModelCatalogRuntimeSF.Do("kiro_model_catalog_runtime", func() (any, error) {
+		if cached, ok := s.kiroModelCatalogRuntimeCache.Load().(*cachedKiroModelCatalogRuntime); ok && cached != nil {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached, nil
+			}
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), kiroModelCatalogRuntimeDBTimeout)
+		defer cancel()
+
+		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+			SettingKeyKiroModelCatalogEnforcementMode,
+			SettingKeyKiroModelCatalogEmergencyOff,
+		})
+		if err != nil {
+			slog.Warn("failed to get kiro model catalog runtime settings", "error", err)
+			entry := &cachedKiroModelCatalogRuntime{
+				runtime:   kiroModelCatalogRuntimeFallback,
+				expiresAt: time.Now().Add(kiroModelCatalogRuntimeErrorTTL).UnixNano(),
+			}
+			s.kiroModelCatalogRuntimeCache.Store(entry)
+			return entry, nil
+		}
+
+		rt := kiroModelCatalogRuntimeFallback
+		if mode, ok := parseKiroCatalogMode(values[SettingKeyKiroModelCatalogEnforcementMode]); ok {
+			rt.Mode = mode
+		}
+		rt.EmergencyOff = strings.TrimSpace(values[SettingKeyKiroModelCatalogEmergencyOff]) == "true"
+
+		entry := &cachedKiroModelCatalogRuntime{
+			runtime:   rt,
+			expiresAt: time.Now().Add(kiroModelCatalogRuntimeCacheTTL).UnixNano(),
+		}
+		s.kiroModelCatalogRuntimeCache.Store(entry)
+		return entry, nil
+	})
+	if entry, ok := result.(*cachedKiroModelCatalogRuntime); ok && entry != nil {
+		return entry.runtime
+	}
+	return kiroModelCatalogRuntimeFallback
+}
+
 const openAIQuotaAutoPauseSettingsCacheTTL = 60 * time.Second
 const openAIQuotaAutoPauseSettingsErrorTTL = 5 * time.Second
 const openAIQuotaAutoPauseSettingsDBTimeout = 5 * time.Second

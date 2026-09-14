@@ -361,6 +361,9 @@ func (s *GatewayService) readUpstreamErrorBody(resp *http.Response) ([]byte, err
 	return io.ReadAll(io.LimitReader(resp.Body, limit))
 }
 
+// requestedModel preserves a platform-specific compatibility seam: Kiro passes the
+// client's pre-mapping model; other platforms pass an already-mapped model.
+// Temporary-unschedulable handling derives Kiro's scheduler key and uses other platforms' keys directly.
 func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, requestedModel ...string) (*ForwardResult, error) {
 	// Upstream returned a non-success HTTP status; count Ollama Cloud activity.
 	scheduleOllamaCloudUsageActivity(s.deferredService, account)

@@ -222,6 +222,10 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyCyberSessionBlockEnabled:    "false",
 		SettingKeyCyberSessionBlockTTLSeconds: "3600",
 
+		// Kiro 模型目录门控（默认 shadow 观察模式；紧急关闭默认关）
+		SettingKeyKiroModelCatalogEnforcementMode: "shadow",
+		SettingKeyKiroModelCatalogEmergencyOff:    "false",
+
 		// Claude Code version check (default: empty = disabled)
 		SettingKeyMinClaudeCodeVersion: "",
 		SettingKeyMaxClaudeCodeVersion: "",

@@ -68,6 +68,7 @@ type UsageGrant struct {
 type UsageCreditSummary struct {
 	SubscriptionType  string
 	SubscriptionTitle string
+	Tier              Tier
 	ResourceType      string
 	Unit              string
 	CurrentUsage      float64
@@ -174,6 +175,7 @@ func SummarizeUsageLimits(response *UsageLimitsResponse) *UsageCreditSummary {
 		NextResetAt:  resetAt,
 	}
 	if response.SubscriptionInfo != nil {
+		summary.Tier = ParseTier(response.SubscriptionInfo)
 		summary.SubscriptionTitle = firstNonEmpty(
 			response.SubscriptionInfo.SubscriptionTitle,
 			response.SubscriptionInfo.SubscriptionName,

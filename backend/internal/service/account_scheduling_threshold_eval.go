@@ -312,6 +312,8 @@ const (
 	kiroSchedUtilizationKey        = "kiro_sched_utilization"
 	kiroSchedResetAtKey            = "kiro_sched_reset_at"
 	kiroSchedUpdatedAtKey          = "kiro_sched_usage_updated_at"
+	kiroSchedTierKey               = "kiro_sched_tier"
+	kiroSchedTierUpdatedAtKey      = "kiro_sched_tier_updated_at"
 	antigravitySchedUtilizationKey = "antigravity_sched_utilization"
 	antigravitySchedResetAtKey     = "antigravity_sched_reset_at"
 	antigravitySchedScopeKey       = "antigravity_sched_scope"

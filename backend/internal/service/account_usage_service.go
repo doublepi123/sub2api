@@ -198,6 +198,7 @@ type KiroSubscriptionQuota struct {
 	SubscriptionTitle string     `json:"subscription_title,omitempty"`
 	ResourceType      string     `json:"resource_type,omitempty"`
 	Unit              string     `json:"unit,omitempty"`
+	Tier              kiro.Tier  `json:"tier,omitempty"`
 	CurrentUsage      float64    `json:"current_usage"`
 	UsageLimit        float64    `json:"usage_limit"`
 	Remaining         float64    `json:"remaining"`
@@ -253,7 +254,8 @@ type UsageInfo struct {
 	AICredits []AICredit `json:"ai_credits,omitempty"`
 
 	// Kiro 官方 credits 额度
-	KiroSubscription *KiroSubscriptionQuota `json:"kiro_subscription,omitempty"`
+	KiroSubscription   *KiroSubscriptionQuota `json:"kiro_subscription,omitempty"`
+	kiroPersistenceErr error
 
 	// Antigravity 废弃模型转发规则 (old_model_id -> new_model_id)
 	ModelForwardingRules map[string]string `json:"model_forwarding_rules,omitempty"`
@@ -333,6 +335,7 @@ type AccountUsageService struct {
 	grokQuotaService        *GrokQuotaService
 	openAIQuotaService      *OpenAIQuotaService
 	kiroUsageFetcher        KiroUsageFetcher
+	kiroCatalogFetcher      KiroModelCatalogFetcher
 	cache                   *UsageCache
 	identityCache           IdentityCache
 	tlsFPProfileService     *TLSFingerprintProfileService
@@ -737,6 +740,7 @@ func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account
 				SubscriptionTitle: summary.SubscriptionTitle,
 				ResourceType:      summary.ResourceType,
 				Unit:              summary.Unit,
+				Tier:              summary.Tier,
 				CurrentUsage:      summary.CurrentUsage,
 				UsageLimit:        summary.UsageLimit,
 				Remaining:         summary.Remaining,
@@ -745,10 +749,13 @@ func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account
 				NextResetAt:       summary.NextResetAt,
 			}
 		}
+		usage.kiroPersistenceErr = s.persistKiroSchedulerExtras(ctx, account, usage)
+		if usage.kiroPersistenceErr != nil {
+			slog.Warn("kiro_sched_persist_failed", "account_id", account.ID, "error", usage.kiroPersistenceErr)
+		}
 		if s.cache != nil {
 			s.cache.kiroUsageCache.Store(account.ID, &kiroUsageCache{usageInfo: usage, timestamp: time.Now()})
 		}
-		s.persistKiroSchedulerExtras(ctx, account, usage)
 		return usage, nil
 	}
 
@@ -861,12 +868,23 @@ func (s *AccountUsageService) syncActiveToPassive(ctx context.Context, accountID
 	}
 }
 
-func (s *AccountUsageService) persistKiroSchedulerExtras(ctx context.Context, account *Account, usage *UsageInfo) {
+func (s *AccountUsageService) persistKiroSchedulerExtras(ctx context.Context, account *Account, usage *UsageInfo) error {
 	if s == nil || account == nil || account.ID <= 0 || usage == nil || usage.KiroSubscription == nil {
-		return
+		return nil
 	}
 	updates := buildKiroSchedulerExtraUpdates(usage.KiroSubscription)
-	s.persistSchedulerExtraUpdates(ctx, account, updates, "kiro_sched_persist_failed")
+	if s.accountRepo != nil {
+		if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+			return fmt.Errorf("persist kiro scheduler extras: %w", err)
+		}
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	for key, value := range updates {
+		account.Extra[key] = value
+	}
+	return nil
 }
 
 func (s *AccountUsageService) persistAntigravitySchedulerExtras(ctx context.Context, account *Account, usage *UsageInfo) {
@@ -877,9 +895,15 @@ func (s *AccountUsageService) persistAntigravitySchedulerExtras(ctx context.Cont
 	s.persistSchedulerExtraUpdates(ctx, account, updates, "antigravity_sched_persist_failed")
 }
 
-func (s *AccountUsageService) persistSchedulerExtraUpdates(ctx context.Context, account *Account, updates map[string]any, warnEvent string) {
+func (s *AccountUsageService) persistSchedulerExtraUpdates(ctx context.Context, account *Account, updates map[string]any, warnEvent string) error {
 	if s == nil || account == nil || account.ID <= 0 || len(updates) == 0 {
-		return
+		return nil
+	}
+	if s.accountRepo != nil {
+		if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+			slog.Warn(warnEvent, "account_id", account.ID, "error", err)
+			return fmt.Errorf("persist scheduler extras: %w", err)
+		}
 	}
 	if account.Extra == nil {
 		account.Extra = map[string]any{}
@@ -887,12 +911,7 @@ func (s *AccountUsageService) persistSchedulerExtraUpdates(ctx context.Context, 
 	for key, value := range updates {
 		account.Extra[key] = value
 	}
-	if s.accountRepo == nil {
-		return
-	}
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
-		slog.Warn(warnEvent, "account_id", account.ID, "error", err)
-	}
+	return nil
 }
 
 func buildKiroSchedulerExtraUpdates(quota *KiroSubscriptionQuota) map[string]any {
@@ -906,12 +925,18 @@ func buildKiroSchedulerExtraUpdates(quota *KiroSubscriptionQuota) map[string]any
 	if util > 100 {
 		util = 100
 	}
+	now := time.Now().UTC()
 	updates := map[string]any{
 		kiroSchedUtilizationKey: util,
-		kiroSchedUpdatedAtKey:   time.Now().UTC().Format(time.RFC3339),
+		kiroSchedUpdatedAtKey:   now.Format(time.RFC3339),
 	}
-	if quota.NextResetAt != nil && quota.NextResetAt.After(time.Now()) {
+	if quota.NextResetAt != nil && quota.NextResetAt.After(now) {
 		updates[kiroSchedResetAtKey] = quota.NextResetAt.UTC().Format(time.RFC3339)
+	}
+	// Unknown tiers are omitted so JSONB merge leaves previously detected good values intact.
+	if quota.Tier == kiro.TierFree || quota.Tier == kiro.TierPaid {
+		updates[kiroSchedTierKey] = string(quota.Tier)
+		updates[kiroSchedTierUpdatedAtKey] = now.Format(time.RFC3339)
 	}
 	return updates
 }

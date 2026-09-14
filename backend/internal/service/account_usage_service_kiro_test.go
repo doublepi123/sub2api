@@ -74,6 +74,28 @@ func TestAccountUsageServiceMapsKiroUnauthorizedToReauthState(t *testing.T) {
 	require.NotEmpty(t, usage.Error)
 }
 
+func TestGetKiroUsage_CacheHitDoesNotPersist(t *testing.T) {
+	// Given: a successful probe has populated the cache and persisted once.
+	repo := &accountUsageCodexProbeRepo{updateExtraCh: make(chan map[string]any, 2)}
+	fetcher := &kiroUsageFetcherStub{response: &kiro.UsageLimitsResponse{
+		SubscriptionInfo:   &kiro.UsageSubscriptionInfo{SubscriptionTitle: "KIRO FREE"},
+		UsageBreakdownList: []kiro.UsageBreakdown{{ResourceType: "CREDIT", UsageLimit: 50}},
+	}}
+	svc := &AccountUsageService{accountRepo: repo, cache: NewUsageCache(), kiroUsageFetcher: fetcher}
+	a := &Account{ID: 1, Platform: PlatformKiro, Type: AccountTypeOAuth, Extra: map[string]any{}}
+	first, err := svc.getKiroUsage(context.Background(), a, false)
+	require.NoError(t, err)
+	require.Len(t, repo.updateExtraCh, 1)
+	writesBefore := len(repo.updateExtraCh)
+	// When
+	second, err := svc.getKiroUsage(context.Background(), a, false)
+	// Then
+	require.NoError(t, err)
+	require.Same(t, first, second)
+	require.Equal(t, 1, fetcher.calls)
+	require.Equal(t, 0, len(repo.updateExtraCh)-writesBefore, "cache hit must perform ZERO additional UpdateExtra calls")
+}
+
 func TestBuildKiroSchedulerExtraUpdatesPersistsCreditsSnapshot(t *testing.T) {
 	resetAt := time.Now().UTC().Add(6 * time.Hour)
 	updates := buildKiroSchedulerExtraUpdates(&KiroSubscriptionQuota{
@@ -143,5 +165,63 @@ func TestAccountUsageServicePersistsKiroSchedulerExtras(t *testing.T) {
 		require.InDelta(t, 90.0, updates[kiroSchedUtilizationKey], 0.0001)
 	default:
 		t.Fatal("expected UpdateExtra to persist kiro scheduler extras")
+	}
+}
+
+func TestBuildKiroSchedulerExtraUpdates_Tier(t *testing.T) {
+	futureReset := time.Now().UTC().Add(4 * time.Hour)
+	cases := []struct {
+		name         string
+		tier         kiro.Tier
+		expectTier   bool
+		expectedTier string
+	}{
+		{
+			name:         "free tier writes tier and updated_at",
+			tier:         kiro.TierFree,
+			expectTier:   true,
+			expectedTier: "free",
+		},
+		{
+			name:         "paid tier writes tier and updated_at",
+			tier:         kiro.TierPaid,
+			expectTier:   true,
+			expectedTier: "paid",
+		},
+		{
+			name:       "unknown tier omits tier and updated_at",
+			tier:       kiro.TierUnknown,
+			expectTier: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			quota := &KiroSubscriptionQuota{
+				UsagePercent: 42.5,
+				NextResetAt:  &futureReset,
+				Tier:         tc.tier,
+			}
+			updates := buildKiroSchedulerExtraUpdates(quota)
+			require.NotNil(t, updates)
+
+			require.InDelta(t, 42.5, updates[kiroSchedUtilizationKey], 0.0001)
+			require.Equal(t, futureReset.UTC().Format(time.RFC3339), updates[kiroSchedResetAtKey])
+			require.NotEmpty(t, updates[kiroSchedUpdatedAtKey])
+			_, err := time.Parse(time.RFC3339, updates[kiroSchedUpdatedAtKey].(string))
+			require.NoError(t, err)
+
+			if tc.expectTier {
+				require.Contains(t, updates, kiroSchedTierKey)
+				require.Equal(t, tc.expectedTier, updates[kiroSchedTierKey])
+				require.Contains(t, updates, kiroSchedTierUpdatedAtKey)
+				require.NotEmpty(t, updates[kiroSchedTierUpdatedAtKey])
+				_, err = time.Parse(time.RFC3339, updates[kiroSchedTierUpdatedAtKey].(string))
+				require.NoError(t, err)
+			} else {
+				require.NotContains(t, updates, kiroSchedTierKey)
+				require.NotContains(t, updates, kiroSchedTierUpdatedAtKey)
+			}
+		})
 	}
 }

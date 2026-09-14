@@ -20,19 +20,20 @@ import (
 
 // RateLimitService 处理限流和过载状态管理
 type RateLimitService struct {
-	accountRepo           AccountRepository
-	usageRepo             UsageLogRepository
-	cfg                   *config.Config
-	geminiQuotaService    *GeminiQuotaService
-	tempUnschedCache      TempUnschedCache
-	openAIAPIKeyHealth    OpenAIAPIKeyHealthCache
-	timeoutCounterCache   TimeoutCounterCache
-	openAI403CounterCache OpenAI403CounterCache
-	settingService        *SettingService
-	tokenCacheInvalidator TokenCacheInvalidator
-	runtimeBlocker        AccountRuntimeBlocker
-	usageCacheMu          sync.RWMutex
-	usageCache            map[int64]*geminiUsageCacheEntry
+	accountRepo             AccountRepository
+	usageRepo               UsageLogRepository
+	cfg                     *config.Config
+	geminiQuotaService      *GeminiQuotaService
+	tempUnschedCache        TempUnschedCache
+	openAIAPIKeyHealth      OpenAIAPIKeyHealthCache
+	timeoutCounterCache     TimeoutCounterCache
+	openAI403CounterCache   OpenAI403CounterCache
+	settingService          *SettingService
+	tokenCacheInvalidator   TokenCacheInvalidator
+	runtimeBlocker          AccountRuntimeBlocker
+	kiroCatalogEarlyRefresh func(accountID int64)
+	usageCacheMu            sync.RWMutex
+	usageCache              map[int64]*geminiUsageCacheEntry
 
 	// OpenAI Team 联动熔断的进程内去重：teamID → 去重窗口截止时间
 	openaiTeamLinkedMu     sync.Mutex
@@ -129,6 +130,10 @@ func (s *RateLimitService) SetTokenCacheInvalidator(invalidator TokenCacheInvali
 
 func (s *RateLimitService) SetAccountRuntimeBlocker(blocker AccountRuntimeBlocker) {
 	s.runtimeBlocker = blocker
+}
+
+func (s *RateLimitService) SetKiroCatalogEarlyRefresh(fn func(int64)) {
+	s.kiroCatalogEarlyRefresh = fn
 }
 
 func (s *RateLimitService) IsOpenAIAdvancedSchedulerStickyWeightedEnabled(ctx context.Context) bool {
@@ -2432,6 +2437,8 @@ const upstreamModelNotFoundCooldown = 30 * time.Minute
 const upstreamModelNotFoundReason = "upstream_404_model_not_found"
 const upstreamCodexPlanGatedModelCooldown = 30 * time.Minute
 const upstreamCodexPlanGatedModelReason = "upstream_400_codex_plan_gated_model"
+const kiroInvalidModelCooldown = 30 * time.Minute
+const kiroInvalidModelReason = "upstream_400_kiro_invalid_model"
 const tempUnschedBodyMaxBytes = 64 << 10
 const tempUnschedMessageMaxBytes = 2048
 
@@ -2452,11 +2459,15 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	}
 	var cooldown time.Duration
 	var reason string
+	hintEarlyRefresh := false
 	switch {
 	case isUpstreamModelNotFoundError(statusCode, responseBody):
 		cooldown, reason = upstreamModelNotFoundCooldown, upstreamModelNotFoundReason
 	case isOpenAIOAuthAccount(account) && isOpenAICodexPlanGatedModelError(statusCode, responseBody):
 		cooldown, reason = upstreamCodexPlanGatedModelCooldown, upstreamCodexPlanGatedModelReason
+	case account.Platform == PlatformKiro && isKiroInvalidModelIDError(statusCode, responseBody):
+		cooldown, reason = kiroInvalidModelCooldown, kiroInvalidModelReason
+		hintEarlyRefresh = true
 	default:
 		return false
 	}
@@ -2473,6 +2484,9 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 		return true
 	}
 	slog.Info("upstream_model_not_found_model_rate_limited", "account_id", account.ID, "model", modelKey, "reason", reason, "reset_at", resetAt)
+	if hintEarlyRefresh && s.kiroCatalogEarlyRefresh != nil && account.ID > 0 {
+		s.kiroCatalogEarlyRefresh(account.ID)
+	}
 	return true
 }
 
@@ -2645,6 +2659,9 @@ func matchTempUnschedKeyword(bodyLower string, keywords []string) string {
 	return ""
 }
 
+// requestedModel is a compatibility seam, not a uniform contract: Kiro passes the
+// client's pre-mapping model, and this function derives its scheduler key. Other
+// platforms pass an already-mapped model, which is used directly as the key.
 func (s *RateLimitService) triggerTempUnschedulable(ctx context.Context, account *Account, rule TempUnschedulableRule, ruleIndex int, statusCode int, matchedKeyword string, responseBody []byte, requestedModel ...string) bool {
 	if account == nil {
 		return false
@@ -2676,8 +2693,16 @@ func (s *RateLimitService) triggerTempUnschedulable(ctx context.Context, account
 	// Persist known-model failures under the model key so the scheduler excludes
 	// only this (account, model) pair. Authentication and model-unknown failures
 	// retain the legacy account-wide temporary-unschedulable behavior below.
-	modelKey := firstRequestedModel(requestedModel)
-	if modelKey != "" && statusCode != http.StatusUnauthorized {
+	clientModel := firstRequestedModel(requestedModel)
+	if clientModel != "" && statusCode != http.StatusUnauthorized {
+		modelKey := firstRequestedModel(requestedModel)
+		if account.Platform == PlatformKiro {
+			modelKey = firstRequestedModel(account.modelRateLimitKeysForRequest(ctx, clientModel))
+			if modelKey == "" {
+				slog.Warn("temp_unsched_model_rate_limit_key_empty", "account_id", account.ID, "model", clientModel)
+				return true
+			}
+		}
 		if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, until, reason); err != nil {
 			slog.Warn("temp_unsched_model_rate_limit_set_failed", "account_id", account.ID, "model", modelKey, "error", err)
 			// The rule matched, so fail over the current request even if persistence

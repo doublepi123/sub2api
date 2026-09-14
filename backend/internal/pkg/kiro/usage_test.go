@@ -83,3 +83,24 @@ func TestSummarizeUsageLimitsUsesPreciseCreditsAndActiveGrants(t *testing.T) {
 	require.NotNil(t, summary.NextResetAt)
 	require.Equal(t, time.Unix(int64(reset), 0).UTC(), *summary.NextResetAt)
 }
+
+func TestSummarizeUsageLimits_Tier(t *testing.T) {
+	breakdown := []UsageBreakdown{{ResourceType: "CREDIT", Unit: "INVOCATIONS", UsageLimit: 1000}}
+	tests := []struct {
+		name string
+		info *UsageSubscriptionInfo
+		want Tier
+	}{
+		{name: "kiro free type", info: &UsageSubscriptionInfo{Type: "KIRO_FREE"}, want: TierFree},
+		{name: "kiro pro title", info: &UsageSubscriptionInfo{SubscriptionTitle: "KIRO PRO"}, want: TierPaid},
+		{name: "nil subscription info", info: nil, want: TierUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			summary := SummarizeUsageLimits(&UsageLimitsResponse{UsageBreakdownList: breakdown, SubscriptionInfo: tt.info})
+			require.NotNil(t, summary)
+			require.Equal(t, tt.want, summary.Tier)
+		})
+	}
+}

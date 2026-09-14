@@ -83,7 +83,8 @@ func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, accoun
 	startTime := time.Now()
 	originalModel := parsed.Model
 	mappedModel := account.GetMappedModel(originalModel)
-	resp, err := s.forwardKiroAnthropicResponse(ctx, account, parsed.Body.Bytes(), mappedModel, parsed.Stream, kiroConversationSeed(parsed))
+	upstreamModel := kiroUpstreamModel(account, originalModel)
+	resp, err := s.forwardKiroAnthropicResponse(ctx, account, parsed.Body.Bytes(), upstreamModel, parsed.Stream, kiroConversationSeed(parsed))
 	if err != nil {
 		if c != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"type": "error", "error": gin.H{"type": "upstream_error", "message": "Kiro upstream request failed"}})
@@ -92,7 +93,7 @@ func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, accoun
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= http.StatusBadRequest {
-		return s.handleErrorResponse(ctx, resp, c, account, mappedModel)
+		return s.handleErrorResponse(ctx, resp, c, account, originalModel)
 	}
 	if parsed.OnUpstreamAccepted != nil {
 		parsed.OnUpstreamAccepted()

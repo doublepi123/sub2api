@@ -120,6 +120,7 @@ func ProvideOpenAIOAuthService(
 // ProvideTokenRefreshService creates and starts TokenRefreshService
 func ProvideTokenRefreshService(
 	accountRepo AccountRepository,
+	accountUsageService *AccountUsageService,
 	oauthService *OAuthService,
 	openaiOAuthService *OpenAIOAuthService,
 	geminiOAuthService *GeminiOAuthService,
@@ -135,6 +136,8 @@ func ProvideTokenRefreshService(
 	runtimeBlocker AccountRuntimeBlocker,
 	httpUpstream HTTPUpstream,
 	tlsFPProfileService *TLSFingerprintProfileService,
+	leaderLease LeaderLease,
+	rateLimitService *RateLimitService,
 ) *TokenRefreshService {
 	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, cacheInvalidator, schedulerCache, cfg, tempUnschedCache, grokOAuthService)
 	// 注入 OpenAI privacy opt-out 依赖
@@ -145,6 +148,15 @@ func ProvideTokenRefreshService(
 	svc.SetRefreshPolicy(DefaultBackgroundRefreshPolicy())
 	svc.SetAccountRuntimeBlocker(runtimeBlocker)
 	svc.SetKiroRefreshTransport(httpUpstream, tlsFPProfileService)
+	svc.SetLeaderLease(leaderLease)
+	svc.kiroModelCatalogRefresher = NewKiroModelCatalogRefresher(accountUsageService, svc.leaderLease)
+	if rateLimitService != nil {
+		rateLimitService.SetKiroCatalogEarlyRefresh(func(accountID int64) {
+			if refresher := svc.KiroCatalogRefresher(); refresher != nil {
+				refresher.RequestEarlyRefresh(accountID)
+			}
+		})
+	}
 	svc.Start()
 	return svc
 }
@@ -245,6 +257,7 @@ func ProvideAccountUsageService(
 	)
 	service.agentIdentityWS = openAIGatewayService
 	service.SetKiroUsageFetcher(gatewayService)
+	service.SetKiroModelCatalogFetcher(gatewayService)
 	return service
 }
 

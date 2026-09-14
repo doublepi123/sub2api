@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
@@ -2540,9 +2541,14 @@ func (s *GatewayService) diagnoseSelectionFailure(
 		}
 	}
 	if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
+		detail := fmt.Sprintf("model=%s", requestedModel)
+		if acc.Platform == PlatformKiro {
+			decision, _ := s.kiroCatalogDecide(ctx, acc, requestedModel)
+			detail = fmt.Sprintf("model=%s reason=%s", kiroUpstreamModel(acc, requestedModel), decision)
+		}
 		return selectionFailureDiagnosis{
 			Category: "model_unsupported",
-			Detail:   fmt.Sprintf("model=%s", requestedModel),
+			Detail:   detail,
 		}
 	}
 	if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
@@ -2612,6 +2618,24 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 		if publicModel, modelOK := RequestedPublicModelFromContext(ctx); modelOK && !explicitModelMappingClaims(*account, publicModel) {
 			return false
 		}
+	}
+	if account.Platform == PlatformKiro {
+		if !s.isModelSupportedByAccount(account, requestedModel) {
+			return false
+		}
+		if strings.TrimSpace(requestedModel) == "" {
+			return true
+		}
+		decision, allowed, ageSeconds := s.kiroCatalogEvaluate(ctx, account, requestedModel)
+		if !allowed {
+			return false
+		}
+		if decision != kiroCatalogAllowed && decision != kiroCatalogModeOffResult {
+			slog.Info("kiro_catalog_shadow_would_reject", "account_id", account.ID,
+				"resolved_model", kiroUpstreamModel(account, requestedModel),
+				"reason", string(decision), "catalog_age_s", ageSeconds, "source", kiro.CatalogSource)
+		}
+		return true
 	}
 	if account.Platform == PlatformAntigravity {
 		if strings.TrimSpace(requestedModel) == "" {
