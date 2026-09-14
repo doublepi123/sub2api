@@ -16,7 +16,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
@@ -2626,14 +2625,9 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 		if strings.TrimSpace(requestedModel) == "" {
 			return true
 		}
-		decision, allowed, ageSeconds := s.kiroCatalogEvaluate(ctx, account, requestedModel)
+		_, allowed, _ := s.kiroCatalogEvaluate(ctx, account, requestedModel)
 		if !allowed {
 			return false
-		}
-		if decision != kiroCatalogAllowed && decision != kiroCatalogModeOffResult {
-			slog.Info("kiro_catalog_shadow_would_reject", "account_id", account.ID,
-				"resolved_model", kiroUpstreamModel(account, requestedModel),
-				"reason", string(decision), "catalog_age_s", ageSeconds, "source", kiro.CatalogSource)
 		}
 		return true
 	}

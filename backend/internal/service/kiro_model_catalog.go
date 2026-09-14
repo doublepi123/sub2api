@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"sort"
 	"strconv"
 	"time"
 
@@ -85,6 +88,35 @@ func (s *GatewayService) kiroCatalogEvaluate(ctx context.Context, account *Accou
 	allowed = mode == kiroCatalogModeShadow
 	subject := s.kiroCatalogSubject(ctx, account)
 	catalog, ok := subject.kiroModelCatalog()
+	defer func() {
+		if decision == kiroCatalogAllowed {
+			return
+		}
+		extraKeys := make([]string, 0)
+		rawType := "<nil>"
+		if subject != nil {
+			for key := range subject.Extra {
+				extraKeys = append(extraKeys, key)
+			}
+			sort.Strings(extraKeys)
+			rawType = fmt.Sprintf("%T", subject.Extra[kiroDetectedModelCatalogKey])
+		}
+		var accountID int64
+		if account != nil {
+			accountID = account.ID
+		}
+		message := "kiro_catalog_decision_detail"
+		if mode == kiroCatalogModeShadow {
+			message = "kiro_catalog_shadow_would_reject"
+		}
+		slog.InfoContext(ctx, message,
+			"account_id", accountID, "resolved_model", kiroUpstreamModel(account, requestedModel),
+			"reason", string(decision), "catalog_age_s", ageSeconds, "source", catalog.Source,
+			"subject_nil", subject == nil, "extra_keys", extraKeys, "catalog_raw_type", rawType,
+			"parse_ok", ok, "stored_fp", catalog.ScopeFingerprint,
+			"computed_fp", subject.kiroCatalogScopeFingerprint(),
+			"catalog_state", string(catalog.State), "effective_state", string(catalog.EffectiveState(time.Now())))
+	}()
 	if !ok {
 		return kiroCatalogUnknown, allowed, -1
 	}
