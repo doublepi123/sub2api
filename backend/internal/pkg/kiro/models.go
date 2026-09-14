@@ -73,6 +73,29 @@ func (e *CatalogHTTPError) Error() string {
 	return fmt.Sprintf("kiro model catalog returned HTTP %d", e.StatusCode)
 }
 
+var catalogNow = time.Now
+
+// ParseRetryAfter parses RFC 9110 §10.2.3: Retry-After = HTTP-date / delay-seconds.
+func ParseRetryAfter(headerValue string, now time.Time) (time.Duration, bool) {
+	raw := strings.TrimSpace(headerValue)
+	if raw == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseUint(raw, 10, 64); err == nil {
+		if seconds > uint64((1<<63-1)/time.Second) {
+			return 0, false
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	if t, err := http.ParseTime(raw); err == nil {
+		if d := t.Sub(now); d > 0 {
+			return d, true
+		}
+		return 0, true
+	}
+	return 0, false
+}
+
 func ParseListAvailableModelsPage(body []byte) (ListAvailableModelsResponse, error) {
 	var page ListAvailableModelsResponse
 	if err := json.Unmarshal(body, &page); err != nil {
@@ -80,6 +103,11 @@ func ParseListAvailableModelsPage(body []byte) (ListAvailableModelsResponse, err
 	}
 	if page.Models == nil {
 		return ListAvailableModelsResponse{}, &CatalogFetchError{Code: "missing_models_field"}
+	}
+	for _, model := range *page.Models {
+		if strings.TrimSpace(model.ModelID) == "" {
+			return ListAvailableModelsResponse{}, &CatalogFetchError{Code: "malformed_model"}
+		}
 	}
 	return page, nil
 }
@@ -110,9 +138,8 @@ func CollectAvailableModels(ctx context.Context, doPage func(ctx context.Context
 		if status < 200 || status >= 300 {
 			httpErr := &CatalogHTTPError{StatusCode: status}
 			if status == http.StatusTooManyRequests {
-				seconds, parseErr := strconv.ParseInt(strings.TrimSpace(headers.Get("Retry-After")), 10, 64)
-				if parseErr == nil && seconds >= 0 && seconds <= int64((1<<63-1)/time.Second) {
-					httpErr.RetryAfter = time.Duration(seconds) * time.Second
+				if retryAfter, ok := ParseRetryAfter(headers.Get("Retry-After"), catalogNow()); ok {
+					httpErr.RetryAfter = retryAfter
 				}
 			}
 			return nil, httpErr
@@ -123,9 +150,7 @@ func CollectAvailableModels(ctx context.Context, doPage func(ctx context.Context
 		}
 		for _, model := range *page.Models {
 			id := strings.ToLower(strings.TrimSpace(model.ModelID))
-			if id != "" {
-				seenIDs[id] = struct{}{}
-			}
+			seenIDs[id] = struct{}{}
 			if len(seenIDs) > 500 {
 				return nil, &CatalogFetchError{Code: "pagination_limit"}
 			}

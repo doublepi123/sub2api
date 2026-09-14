@@ -183,6 +183,98 @@ func TestCollectAvailableModels_NeverInjectsDefaultModelOrAuto(t *testing.T) {
 	require.Equal(t, []string{"claude-haiku-4.5"}, ids)
 }
 
+func TestParseRetryAfter_RFC9110Forms(t *testing.T) {
+	// Given
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	future := now.Add(90 * time.Second)
+	past := now.Add(-time.Hour)
+	tests := []struct {
+		name string
+		raw  string
+		want time.Duration
+		ok   bool
+	}{
+		{"delay seconds", "120", 120 * time.Second, true},
+		{"zero is legal", "0", 0, true},
+		{"negative rejected", "-5", 0, false},
+		{"explicit plus rejected", "+5", 0, false},
+		{"empty", "", 0, false},
+		{"garbage", "abc", 0, false},
+		{"imf-fixdate", future.Format(http.TimeFormat), 90 * time.Second, true},
+		{"rfc850", future.Format(time.RFC850), 90 * time.Second, true},
+		{"ansi c asctime", future.Format(time.ANSIC), 90 * time.Second, true},
+		{"past date lifts restriction", past.Format(http.TimeFormat), 0, true},
+		{"surrounding whitespace", "  120  ", 120 * time.Second, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// When
+			got, ok := ParseRetryAfter(tt.raw, now)
+			// Then
+			require.Equal(t, tt.ok, ok)
+			if tt.ok {
+				require.InDelta(t, tt.want, got, float64(2*time.Second))
+			}
+		})
+	}
+}
+
+func TestCollectAvailableModels_429_HTTPDateRetryAfter(t *testing.T) {
+	// Given
+	pinned := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	original := catalogNow
+	catalogNow = func() time.Time { return pinned }
+	t.Cleanup(func() { catalogNow = original })
+	retryAt := pinned.Add(90 * time.Second).UTC().Format(http.TimeFormat)
+	// When
+	ids, err := CollectAvailableModels(context.Background(), func(context.Context, string) ([]byte, int, http.Header, error) {
+		return nil, 429, http.Header{"Retry-After": []string{retryAt}}, nil
+	})
+	// Then
+	var httpErr *CatalogHTTPError
+	require.ErrorAs(t, err, &httpErr)
+	require.Equal(t, 429, httpErr.StatusCode)
+	require.InDelta(t, 90*time.Second, httpErr.RetryAfter, float64(2*time.Second))
+	require.Nil(t, ids)
+}
+
+func TestParseListAvailableModelsPage_MalformedMember_IsFailure(t *testing.T) {
+	for _, body := range []string{
+		`{"models":[{}]}`,
+		`{"models":[null]}`,
+		`{"models":[{"modelId":""}]}`,
+		`{"models":[{"modelId":"   "}]}`,
+		`{"models":[{"modelId":"a"},{}]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			// Given / When
+			_, err := ParseListAvailableModelsPage([]byte(body))
+			// Then
+			var fetchErr *CatalogFetchError
+			require.ErrorAs(t, err, &fetchErr)
+			require.Equal(t, "malformed_model", fetchErr.Code)
+		})
+	}
+	// Given / When: a literal empty page stays a legitimate success
+	page, err := ParseListAvailableModelsPage([]byte(`{"models":[]}`))
+	// Then
+	require.NoError(t, err)
+	require.NotNil(t, page.Models)
+	require.Empty(t, *page.Models)
+}
+
+func TestCollectAvailableModels_MalformedMember_ReturnsError(t *testing.T) {
+	// Given / When
+	ids, err := CollectAvailableModels(context.Background(), func(context.Context, string) ([]byte, int, http.Header, error) {
+		return []byte(`{"models":[{"modelId":"claude-haiku-4.5"},{}]}`), 200, nil, nil
+	})
+	// Then
+	var fetchErr *CatalogFetchError
+	require.ErrorAs(t, err, &fetchErr)
+	require.Equal(t, "malformed_model", fetchErr.Code)
+	require.Nil(t, ids)
+}
+
 func TestCatalogHTTPError_RetryAfter(t *testing.T) {
 	for _, tt := range []struct {
 		header string
