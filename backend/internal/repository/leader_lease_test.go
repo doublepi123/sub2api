@@ -129,3 +129,77 @@ func TestRedisLeaderLease_RedisErrorIsReturned(t *testing.T) {
 }
 
 var _ service.LeaderLease = NewRedisLeaderLease(nil, "compile-check")
+var _ service.RenewableLeaderLease = (*redisLeaderLease)(nil)
+
+func TestRedisLeaderLease_RenewExtendsOnlyOwnLease(t *testing.T) {
+	// Given replica A holding a short lease, and a separate key owned by replica B
+	mr, rdb := newLeaderLeaseRedis(t)
+	ctx := context.Background()
+	leaseA := NewRedisLeaderLease(rdb, "instance-a").(service.RenewableLeaderLease)
+	leaseB := NewRedisLeaderLease(rdb, "instance-b").(service.RenewableLeaderLease)
+
+	_, ok, err := leaseA.TryAcquire(ctx, "leader:a", 100*time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, ok, err = leaseB.TryAcquire(ctx, "leader:b", 100*time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// When A renews its own lease with a longer TTL
+	ok, err = leaseA.Renew(ctx, "leader:a", time.Hour)
+
+	// Then renewal succeeds and the key's TTL actually grew
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Greater(t, mr.TTL("leader:a"), 100*time.Millisecond)
+
+	// When A tries to renew B's key
+	ttlBefore := mr.TTL("leader:b")
+	ok, err = leaseA.Renew(ctx, "leader:b", time.Hour)
+
+	// Then it is denied without error and B's TTL is unchanged
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Equal(t, ttlBefore, mr.TTL("leader:b"))
+}
+
+func TestRedisLeaderLease_RenewAfterExpiryReturnsFalse(t *testing.T) {
+	// Given a lease that has already expired (ownership lost)
+	mr, rdb := newLeaderLeaseRedis(t)
+	ctx := context.Background()
+	lease := NewRedisLeaderLease(rdb, "instance-a").(service.RenewableLeaderLease)
+
+	_, ok, err := lease.TryAcquire(ctx, "leader:probe", 50*time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, ok)
+	mr.FastForward(time.Second)
+
+	// When renewing after expiry
+	ok, err = lease.Renew(ctx, "leader:probe", time.Hour)
+
+	// Then renewal reports ownership lost, without error
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.False(t, mr.Exists("leader:probe"))
+}
+
+func TestRedisLeaderLease_RenewDoesNotResurrectDeletedKey(t *testing.T) {
+	// Given a lease that was acquired and then released (key deleted)
+	mr, rdb := newLeaderLeaseRedis(t)
+	ctx := context.Background()
+	lease := NewRedisLeaderLease(rdb, "instance-a").(service.RenewableLeaderLease)
+
+	release, ok, err := lease.TryAcquire(ctx, "leader:probe", time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	release()
+	require.False(t, mr.Exists("leader:probe"))
+
+	// When renewing after release
+	ok, err = lease.Renew(ctx, "leader:probe", time.Hour)
+
+	// Then renewal reports ownership lost and the key must NOT reappear
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.False(t, mr.Exists("leader:probe"))
+}

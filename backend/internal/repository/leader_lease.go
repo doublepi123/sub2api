@@ -22,6 +22,15 @@ return 0
 
 var leaderLeaseNoRedisWarnOnce sync.Once
 
+// leaderLeaseRenewScript 仅当 key 当前持有者仍为本实例时才延长 TTL
+// （compare-and-pexpire），防止租约过期被其他副本接管后被本实例误续。
+var leaderLeaseRenewScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0
+`)
+
 type redisLeaderLease struct {
 	rdb        *redis.Client
 	instanceID string
@@ -57,6 +66,14 @@ func (l *redisLeaderLease) TryAcquire(ctx context.Context, key string, ttl time.
 		})
 	}
 	return release, true, nil
+}
+
+func (l *redisLeaderLease) Renew(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	n, err := leaderLeaseRenewScript.Run(ctx, l.rdb, []string{key}, l.instanceID, ttl.Milliseconds()).Int64()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // ProvideLeaderLease 为 Wire 提供 LeaderLease：实例 ID 在进程启动时生成一次。

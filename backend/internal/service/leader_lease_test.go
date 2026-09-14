@@ -32,3 +32,17 @@ func TestNoopLeaderLease_AlwaysAcquires(t *testing.T) {
 		release2()
 	})
 }
+
+func TestNoopLeaderLease_RenewAlwaysTrue(t *testing.T) {
+	// Given a noop leader lease (single-process deployment, no real TTL exists)
+	lease := NoopLeaderLease()
+
+	// When renewing any key
+	ok, err := lease.(RenewableLeaderLease).Renew(context.Background(), "leader:test", time.Minute)
+
+	// Then renewal always succeeds: a single-process deployment can never lose ownership
+	require.NoError(t, err)
+	require.True(t, ok)
+}
+
+var _ RenewableLeaderLease = noopLeaderLease{}
