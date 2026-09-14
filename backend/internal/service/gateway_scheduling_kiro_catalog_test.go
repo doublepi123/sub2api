@@ -26,19 +26,18 @@ var kiroPaidCatalogIDs = append(append([]string{}, kiroFreeCatalogIDs...),
 	"claude-sonnet-4.6", "claude-sonnet-5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra")
 
 func kiroCatalogAccount(id int64, ids []string, lastSuccess time.Time, mode string) Account {
-	return Account{
+	a := Account{
 		ID: id, Platform: PlatformKiro, Type: AccountTypeOAuth,
 		Status: StatusActive, Schedulable: true, Concurrency: 5,
-		Extra: map[string]any{
-			"kiro_model_catalog_mode": mode,
-			"detected_model_catalog": map[string]any{
-				"schema_version": kiro.CatalogSchemaVersion, "source": kiro.CatalogSource,
-				"state": "ready", "model_ids": ids,
-				"last_success_at":   lastSuccess.UTC().Format(time.RFC3339),
-				"scope_fingerprint": kiro.ScopeFingerprint(kiro.ScopeInputs{}),
-			},
-		},
+		Extra: map[string]any{"kiro_model_catalog_mode": mode},
 	}
+	a.Extra["detected_model_catalog"] = map[string]any{
+		"schema_version": kiro.CatalogSchemaVersion, "source": kiro.CatalogSource,
+		"state": "ready", "model_ids": ids,
+		"last_success_at":   lastSuccess.UTC().Format(time.RFC3339),
+		"scope_fingerprint": a.kiroCatalogScopeFingerprint(),
+	}
+	return a
 }
 
 func newKiroCatalogSchedulingService(accounts []Account) *GatewayService {
@@ -131,6 +130,50 @@ func TestKiroCatalogGate_Unknown_AllowsInShadow_RejectsInEnforce(t *testing.T) {
 			allowed := (&GatewayService{}).isModelSupportedByAccountWithContext(context.Background(), &a, "claude-opus-4-5")
 			// Then
 			require.Equal(t, mode != "enforce", allowed)
+		})
+	}
+}
+
+func TestKiroCatalogGate_MissingFingerprint_TreatedAsUnknown(t *testing.T) {
+	for _, mode := range []string{"enforce", "shadow"} {
+		t.Run(mode, func(t *testing.T) {
+			// Given: a ready catalog with no scope fingerprint.
+			a := kiroCatalogAccount(1, kiroPaidCatalogIDs, time.Now(), mode)
+			a.Extra["detected_model_catalog"].(map[string]any)["scope_fingerprint"] = ""
+			logs := captureKiroCatalogLogs(t)
+			// When
+			allowed := (&GatewayService{}).isModelSupportedByAccountWithContext(context.Background(), &a, "claude-opus-4-5")
+			// Then: catalog_unknown — rejected in enforce, allowed+logged in shadow.
+			require.Equal(t, mode == "shadow", allowed)
+			if mode == "shadow" {
+				require.Contains(t, logs.String(), `"reason":"catalog_unknown"`)
+				return
+			}
+			d := (&GatewayService{}).diagnoseSelectionFailure(context.Background(), &a, "claude-opus-4-5", PlatformKiro, nil, false)
+			require.Equal(t, "model_unsupported", d.Category)
+			require.Contains(t, d.Detail, "reason=catalog_unknown")
+		})
+	}
+}
+
+func TestKiroCatalogGate_ForeignSource_TreatedAsUnknown(t *testing.T) {
+	for _, mode := range []string{"enforce", "shadow"} {
+		t.Run(mode, func(t *testing.T) {
+			// Given: a ready catalog written by an unknown writer.
+			a := kiroCatalogAccount(1, kiroPaidCatalogIDs, time.Now(), mode)
+			a.Extra["detected_model_catalog"].(map[string]any)["source"] = "something_else"
+			logs := captureKiroCatalogLogs(t)
+			// When
+			allowed := (&GatewayService{}).isModelSupportedByAccountWithContext(context.Background(), &a, "claude-opus-4-5")
+			// Then: catalog_unknown — rejected in enforce, allowed+logged in shadow.
+			require.Equal(t, mode == "shadow", allowed)
+			if mode == "shadow" {
+				require.Contains(t, logs.String(), `"reason":"catalog_unknown"`)
+				return
+			}
+			d := (&GatewayService{}).diagnoseSelectionFailure(context.Background(), &a, "claude-opus-4-5", PlatformKiro, nil, false)
+			require.Equal(t, "model_unsupported", d.Category)
+			require.Contains(t, d.Detail, "reason=catalog_unknown")
 		})
 	}
 }

@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 )
 
 const kiroDetectedModelCatalogKey = "detected_model_catalog"
+const kiroCredentialGenerationKey = "kiro_credential_generation"
 
 type kiroCatalogDecision string
 
@@ -26,6 +28,13 @@ func (a *Account) kiroModelCatalog() (kiro.ModelCatalog, bool) {
 	return kiro.ParseModelCatalog(a.Extra[kiroDetectedModelCatalogKey])
 }
 
+func (a *Account) kiroCredentialGeneration() int64 {
+	if a == nil {
+		return 0
+	}
+	return int64(a.getExtraInt(kiroCredentialGenerationKey))
+}
+
 func (a *Account) kiroCatalogScopeFingerprint() string {
 	if a == nil {
 		return ""
@@ -33,7 +42,8 @@ func (a *Account) kiroCatalogScopeFingerprint() string {
 	return kiro.ScopeFingerprint(kiro.ScopeInputs{
 		Region: a.GetCredential("region"), ProfileARN: a.GetCredential("profile_arn"),
 		AuthMethod: a.GetCredential("auth_method"), ClientID: a.GetCredential("client_id"),
-		BaseURL: a.GetCredential("base_url"),
+		BaseURL:             a.GetCredential("base_url"),
+		PrincipalGeneration: strconv.FormatInt(a.kiroCredentialGeneration(), 10),
 	})
 }
 
@@ -83,7 +93,7 @@ func (s *GatewayService) kiroCatalogEvaluate(ctx context.Context, account *Accou
 	if lastSuccess, err := time.Parse(time.RFC3339, catalog.LastSuccessAt); err == nil {
 		ageSeconds = int64(now.Sub(lastSuccess).Seconds())
 	}
-	if fingerprint := subject.kiroCatalogScopeFingerprint(); catalog.ScopeFingerprint != "" && fingerprint != "" && catalog.ScopeFingerprint != fingerprint {
+	if fingerprint := subject.kiroCatalogScopeFingerprint(); fingerprint != "" && catalog.ScopeFingerprint != fingerprint {
 		return kiroCatalogUnknown, allowed, ageSeconds
 	}
 	switch catalog.EffectiveState(now) {

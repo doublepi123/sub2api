@@ -31,9 +31,18 @@ type ModelCatalog struct {
 	LastErrorCode    string       `json:"last_error_code"`
 }
 
+// Authoritative reports whether this catalog was written by the current
+// detector at a schema this build understands, for a known scope.
+func (c ModelCatalog) Authoritative() bool {
+	return c.SchemaVersion == CatalogSchemaVersion && c.Source == CatalogSource && strings.TrimSpace(c.ScopeFingerprint) != ""
+}
+
 func (c ModelCatalog) EffectiveState(now time.Time) CatalogState {
 	switch c.State {
 	case CatalogStateReady:
+		if !c.Authoritative() {
+			return CatalogStateUnknown
+		}
 		lastSuccess, err := time.Parse(time.RFC3339, c.LastSuccessAt)
 		if err != nil {
 			return CatalogStateUnknown
@@ -65,11 +74,11 @@ func (c ModelCatalog) Contains(modelID string) bool {
 }
 
 type ScopeInputs struct {
-	Region, ProfileARN, AuthMethod, ClientID, BaseURL string
+	Region, ProfileARN, AuthMethod, ClientID, BaseURL, PrincipalGeneration string
 }
 
 func ScopeFingerprint(in ScopeInputs) string {
-	sum := sha256.Sum256([]byte("kiro|" + in.Region + "|" + in.ProfileARN + "|" + in.AuthMethod + "|" + in.ClientID + "|" + in.BaseURL))
+	sum := sha256.Sum256([]byte("kiro|" + in.Region + "|" + in.ProfileARN + "|" + in.AuthMethod + "|" + in.ClientID + "|" + in.BaseURL + "|" + in.PrincipalGeneration))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 

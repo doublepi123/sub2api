@@ -12,7 +12,7 @@ import (
 
 func TestScopeFingerprint(t *testing.T) {
 	// Given: credential tokens are deliberately outside ScopeInputs.
-	in := ScopeInputs{Region: "us-east-1", ProfileARN: "profile", AuthMethod: "social", ClientID: "client", BaseURL: "https://q.us-east-1.amazonaws.com"}
+	in := ScopeInputs{Region: "us-east-1", ProfileARN: "profile", AuthMethod: "social", ClientID: "client", BaseURL: "https://q.us-east-1.amazonaws.com", PrincipalGeneration: "7"}
 	account := struct {
 		scope                     ScopeInputs
 		accessToken, refreshToken string
@@ -23,12 +23,12 @@ func TestScopeFingerprint(t *testing.T) {
 	after := ScopeFingerprint(account.scope)
 	// Then
 	require.Equal(t, before, after)
-	sum := sha256.Sum256([]byte("kiro|us-east-1|profile|social|client|https://q.us-east-1.amazonaws.com"))
+	sum := sha256.Sum256([]byte("kiro|us-east-1|profile|social|client|https://q.us-east-1.amazonaws.com|7"))
 	require.Equal(t, "sha256:"+hex.EncodeToString(sum[:]), after)
 	for _, secret := range []string{account.accessToken, account.refreshToken, "old-access-secret", "old-refresh-secret"} {
 		require.NotContains(t, after, secret)
 	}
-	for _, field := range []string{"region", "profile", "auth", "client", "url"} {
+	for _, field := range []string{"region", "profile", "auth", "client", "url", "generation"} {
 		t.Run(field, func(t *testing.T) {
 			changed := in
 			switch field {
@@ -42,9 +42,30 @@ func TestScopeFingerprint(t *testing.T) {
 				changed.ClientID = "other-client"
 			case "url":
 				changed.BaseURL = "https://other.example"
+			case "generation":
+				changed.PrincipalGeneration = "8"
 			}
 			require.NotEqual(t, before, ScopeFingerprint(changed))
 		})
+	}
+}
+
+func TestScopeFingerprint_IncludesPrincipalGeneration(t *testing.T) {
+	// Given: a credential swap bumps the generation while token rotation does not.
+	base := ScopeInputs{Region: "us-east-1", AuthMethod: "social", BaseURL: "https://q.us-east-1.amazonaws.com", PrincipalGeneration: "0"}
+	// When
+	gen0 := ScopeFingerprint(base)
+	bumped := base
+	bumped.PrincipalGeneration = "1"
+	gen1 := ScopeFingerprint(bumped)
+	// Then: a generation bump changes the fingerprint.
+	require.NotEqual(t, gen0, gen1)
+	// And: identical inputs are deterministic.
+	require.Equal(t, gen0, ScopeFingerprint(base))
+	// And: no token material ever appears in the output.
+	for _, token := range []string{"access-token-secret", "refresh-token-secret"} {
+		require.NotContains(t, gen0, token)
+		require.NotContains(t, gen1, token)
 	}
 }
 
@@ -66,7 +87,43 @@ func TestModelCatalog_EffectiveState_Expired(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			// When / Then
-			require.Equal(t, tt.want, (ModelCatalog{State: tt.state, LastSuccessAt: tt.success}).EffectiveState(now))
+			catalog := ModelCatalog{SchemaVersion: CatalogSchemaVersion, Source: CatalogSource,
+				State: tt.state, ScopeFingerprint: "sha256:scope", LastSuccessAt: tt.success}
+			require.Equal(t, tt.want, catalog.EffectiveState(now))
+		})
+	}
+}
+
+func TestModelCatalog_EffectiveState_NonAuthoritativeIsUnknown(t *testing.T) {
+	// Given: a fresh ready catalog that is otherwise valid.
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	canonical := ModelCatalog{
+		SchemaVersion: CatalogSchemaVersion, Source: CatalogSource, State: CatalogStateReady,
+		ModelIDs: []string{"claude-opus-5"}, ScopeFingerprint: "sha256:scope",
+		LastSuccessAt: now.Format(time.RFC3339),
+	}
+	missingFingerprint := canonical
+	missingFingerprint.ScopeFingerprint = ""
+	foreignSource := canonical
+	foreignSource.Source = "something_else"
+	futureSchema := canonical
+	futureSchema.SchemaVersion = CatalogSchemaVersion + 1
+	stale := canonical
+	stale.LastSuccessAt = now.Add(-25 * time.Hour).Format(time.RFC3339)
+	for _, tt := range []struct {
+		name    string
+		catalog ModelCatalog
+		want    CatalogState
+	}{
+		{"missing fingerprint", missingFingerprint, CatalogStateUnknown},
+		{"foreign source", foreignSource, CatalogStateUnknown},
+		{"future schema version", futureSchema, CatalogStateUnknown},
+		{"canonical", canonical, CatalogStateReady},
+		{"canonical 25h old", stale, CatalogStateExpired},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// When / Then
+			require.Equal(t, tt.want, tt.catalog.EffectiveState(now))
 		})
 	}
 }
