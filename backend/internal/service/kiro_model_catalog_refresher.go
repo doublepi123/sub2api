@@ -23,11 +23,12 @@ type KiroModelCatalogRefresher struct {
 	now                func() time.Time
 	jitter             func(accountID int64) float64
 	maxConcurrency     int
+	leaseTTL           time.Duration
+	renewInterval      time.Duration
 	baseInterval       time.Duration
 	jitterFraction     float64
 	failureBackoffBase time.Duration
 	failureBackoffMax  time.Duration
-	retryAfterCap      time.Duration
 	mu                 sync.Mutex
 	failures           map[int64]int
 	retryAfter         map[int64]time.Duration
@@ -40,7 +41,8 @@ func NewKiroModelCatalogRefresher(prober kiroCatalogProber, lease LeaderLease) *
 	return &KiroModelCatalogRefresher{
 		prober: prober, lease: lease, now: time.Now, jitter: func(int64) float64 { return rand.Float64()*2 - 1 },
 		maxConcurrency: 3, baseInterval: 2 * time.Hour, jitterFraction: 0.2,
-		failureBackoffBase: 15 * time.Minute, failureBackoffMax: 4 * time.Hour, retryAfterCap: 4 * time.Hour,
+		leaseTTL:           10 * time.Minute,
+		failureBackoffBase: kiro.CatalogFailureBackoffBase, failureBackoffMax: kiro.CatalogFailureBackoffMax,
 		failures: make(map[int64]int), retryAfter: make(map[int64]time.Duration), attempts: make(map[int64]time.Time),
 		earlyRequests: make(map[int64]time.Time), earlyPending: make(map[int64]bool),
 	}
@@ -78,7 +80,8 @@ func (r *KiroModelCatalogRefresher) run(ctx context.Context, load func(context.C
 	if lease == nil {
 		lease = NoopLeaderLease()
 	}
-	release, ok, err := lease.TryAcquire(ctx, "kiro:model_catalog:refresher:leader", 10*time.Minute)
+	acquiredAt := time.Now()
+	release, ok, err := lease.TryAcquire(ctx, kiroCatalogLeaseKey, r.leaseTTL)
 	if err != nil {
 		slog.Warn("kiro_model_catalog_lease_failed", "error", err)
 		return
@@ -87,7 +90,9 @@ func (r *KiroModelCatalogRefresher) run(ctx context.Context, load func(context.C
 		return
 	}
 	defer release()
-	accounts, err := load(ctx)
+	leaseCtx, cancel := r.keepCatalogLease(ctx, lease, acquiredAt)
+	defer cancel(nil)
+	accounts, err := load(leaseCtx)
 	if err != nil {
 		slog.Warn("kiro_model_catalog_list_accounts_failed", "error", err)
 		return
@@ -96,7 +101,7 @@ func (r *KiroModelCatalogRefresher) run(ctx context.Context, load func(context.C
 	var priority, regular []*Account
 	seen := make(map[int64]bool, len(accounts))
 	for _, a := range accounts {
-		if ctx.Err() != nil {
+		if leaseCtx.Err() != nil {
 			return
 		}
 		if a == nil || a.Platform != PlatformKiro || a.Type != AccountTypeOAuth || a.IsShadow() || seen[a.ID] {
@@ -104,40 +109,47 @@ func (r *KiroModelCatalogRefresher) run(ctx context.Context, load func(context.C
 		}
 		seen[a.ID] = true
 		catalog, exists := a.kiroModelCatalog()
-		if !exists || catalog.State == kiro.CatalogStateUnknown || catalog.ScopeFingerprint != a.kiroCatalogScopeFingerprint() {
+		if !r.due(a, catalog, now) {
+			continue
+		}
+		state := catalog.EffectiveState(now)
+		if !exists || state == kiro.CatalogStateUnknown || catalog.ScopeFingerprint != a.kiroCatalogScopeFingerprint() {
 			priority = append(priority, a)
-		} else if r.due(a.ID, catalog, now) {
+		} else {
 			regular = append(regular, a)
 		}
 	}
-	r.probeBatch(ctx, priority)
-	r.probeBatch(ctx, regular)
+	r.probeBatch(leaseCtx, priority)
+	r.probeBatch(leaseCtx, regular)
 }
 
-func (r *KiroModelCatalogRefresher) due(id int64, catalog kiro.ModelCatalog, now time.Time) bool {
-	jitter := r.jitter(id)
+func (r *KiroModelCatalogRefresher) due(account *Account, catalog kiro.ModelCatalog, now time.Time) bool {
+	next, nextErr := time.Parse(time.RFC3339Nano, catalog.NextAttemptAt)
+	if nextErr == nil && now.Before(next) {
+		return false
+	}
+	id := account.ID
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.earlyPending[id] {
-		return true
-	}
-	at, err := time.Parse(time.RFC3339Nano, catalog.LastAttemptAt)
+	at, _ := time.Parse(time.RFC3339Nano, catalog.LastAttemptAt)
 	if r.attempts[id].After(at) {
 		at = r.attempts[id]
-	} else if err != nil {
-		return true
 	}
-	interval := time.Duration(float64(r.baseInterval) * (1 + r.jitterFraction*jitter))
-	if catalog.LastErrorCode != "" || r.failures[id] > 0 {
-		interval = r.failureBackoffBase
-		for n := 1; n < r.failures[id] && interval < r.failureBackoffMax; n++ {
+	if catalog.LastErrorCode != "" || catalog.ConsecutiveFailures > 0 || r.failures[id] > 0 {
+		interval := r.failureBackoffBase
+		for n := 1; n < max(catalog.ConsecutiveFailures, r.failures[id]) && interval < r.failureBackoffMax; n++ {
 			interval = min(interval*2, r.failureBackoffMax)
 		}
 		interval = min(interval, r.failureBackoffMax)
 		if retry := r.retryAfter[id]; retry > interval {
 			interval = retry
 		}
+		return !now.Before(at.Add(interval))
 	}
+	if nextErr == nil || r.earlyPending[id] || catalog.EffectiveState(now) == kiro.CatalogStateUnknown || catalog.ScopeFingerprint != account.kiroCatalogScopeFingerprint() {
+		return true
+	}
+	interval := time.Duration(float64(r.baseInterval) * (1 + r.jitterFraction*r.jitter(id)))
 	return !now.Before(at.Add(interval))
 }
 
@@ -194,6 +206,6 @@ func (r *KiroModelCatalogRefresher) recordAttempt(id int64, started time.Time, e
 	r.failures[id]++
 	var httpErr *kiro.CatalogHTTPError
 	if errors.As(err, &httpErr) && httpErr.StatusCode == 429 {
-		r.retryAfter[id] = min(httpErr.RetryAfter, r.retryAfterCap)
+		r.retryAfter[id] = min(httpErr.RetryAfter, kiro.CatalogRetryAfterCap)
 	}
 }

@@ -36,7 +36,7 @@ func (p *catalogProbeFake) RefreshKiroModelCatalog(ctx context.Context, a *Accou
 	if p.err != nil {
 		c.LastErrorCode = "network"
 	}
-	a.Extra[kiroDetectedModelCatalogKey] = map[string]any{"state": string(c.State), "last_attempt_at": c.LastAttemptAt, "last_success_at": c.LastSuccessAt, "scope_fingerprint": c.ScopeFingerprint, "last_error_code": c.LastErrorCode}
+	a.Extra[kiroDetectedModelCatalogKey] = map[string]any{"schema_version": kiro.CatalogSchemaVersion, "source": kiro.CatalogSource, "state": string(c.State), "last_attempt_at": c.LastAttemptAt, "last_success_at": c.LastSuccessAt, "scope_fingerprint": c.ScopeFingerprint, "last_error_code": c.LastErrorCode}
 	return c, p.err
 }
 
@@ -46,7 +46,7 @@ func catalogRefreshAccount(id int64) *Account {
 
 func catalogReadyAccount(id int64, at time.Time) *Account {
 	a := catalogRefreshAccount(id)
-	a.Extra[kiroDetectedModelCatalogKey] = map[string]any{"state": "ready", "scope_fingerprint": a.kiroCatalogScopeFingerprint(), "last_attempt_at": at.Format(time.RFC3339Nano), "last_success_at": at.Format(time.RFC3339Nano)}
+	a.Extra[kiroDetectedModelCatalogKey] = map[string]any{"schema_version": kiro.CatalogSchemaVersion, "source": kiro.CatalogSource, "state": "ready", "scope_fingerprint": a.kiroCatalogScopeFingerprint(), "last_attempt_at": at.Format(time.RFC3339Nano), "last_success_at": at.Format(time.RFC3339Nano)}
 	return a
 }
 

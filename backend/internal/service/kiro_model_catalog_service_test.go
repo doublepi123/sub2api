@@ -154,7 +154,7 @@ func TestRefreshKiroModelCatalog_FingerprintChange_ReplacesCatalog(t *testing.T)
 	// Then
 	require.NoError(t, err)
 	require.Equal(t, []string{"new-model"}, c.ModelIDs)
-	require.Equal(t, kiro.ScopeFingerprint(kiro.ScopeInputs{Region: "eu-west-1"}), c.ScopeFingerprint)
+	require.Equal(t, a.kiroCatalogScopeFingerprint(), c.ScopeFingerprint)
 	require.NotNil(t, r.updates)
 }
 

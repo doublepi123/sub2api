@@ -12,6 +12,12 @@ const CatalogSource = "kiro_list_available_models"
 const CatalogSchemaVersion = 1
 const CatalogMaxAge = 24 * time.Hour
 
+const (
+	CatalogFailureBackoffBase = 15 * time.Minute
+	CatalogFailureBackoffMax  = 4 * time.Hour
+	CatalogRetryAfterCap      = 4 * time.Hour
+)
+
 type CatalogState string
 
 const (
@@ -21,14 +27,27 @@ const (
 )
 
 type ModelCatalog struct {
-	SchemaVersion    int          `json:"schema_version"`
-	Source           string       `json:"source"`
-	State            CatalogState `json:"state"`
-	ModelIDs         []string     `json:"model_ids"`
-	ScopeFingerprint string       `json:"scope_fingerprint"`
-	LastSuccessAt    string       `json:"last_success_at"`
-	LastAttemptAt    string       `json:"last_attempt_at"`
-	LastErrorCode    string       `json:"last_error_code"`
+	SchemaVersion       int          `json:"schema_version"`
+	Source              string       `json:"source"`
+	State               CatalogState `json:"state"`
+	ModelIDs            []string     `json:"model_ids"`
+	ScopeFingerprint    string       `json:"scope_fingerprint"`
+	LastSuccessAt       string       `json:"last_success_at"`
+	LastAttemptAt       string       `json:"last_attempt_at"`
+	LastErrorCode       string       `json:"last_error_code"`
+	ConsecutiveFailures int          `json:"consecutive_failures,omitempty"`
+	NextAttemptAt       string       `json:"next_attempt_at,omitempty"`
+}
+
+// CatalogNextAttempt returns the earliest time a new probe may run, and whether
+// an upstream Retry-After had to be capped.
+func CatalogNextAttempt(now time.Time, failures int, retryAfter time.Duration) (next time.Time, capped bool) {
+	wait := CatalogFailureBackoffBase
+	for n := 1; n < failures && wait < CatalogFailureBackoffMax; n++ {
+		wait = min(wait*2, CatalogFailureBackoffMax)
+	}
+	capped = retryAfter > CatalogRetryAfterCap
+	return now.Add(max(wait, min(retryAfter, CatalogRetryAfterCap))), capped
 }
 
 // Authoritative reports whether this catalog was written by the current
