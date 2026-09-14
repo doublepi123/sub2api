@@ -27,6 +27,7 @@ const (
 )
 
 type ModelCatalog struct {
+	WriteVersion        int64        `json:"write_version,omitempty"`
 	SchemaVersion       int          `json:"schema_version"`
 	Source              string       `json:"source"`
 	State               CatalogState `json:"state"`

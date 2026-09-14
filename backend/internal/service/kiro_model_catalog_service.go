@@ -20,8 +20,14 @@ func (s *AccountUsageService) RefreshKiroModelCatalog(ctx context.Context, accou
 		return kiro.ModelCatalog{}, errors.New("kiro account is required")
 	}
 	previous, _ := kiro.ParseModelCatalog(account.Extra[kiroDetectedModelCatalogKey])
+	previousWriteVersion := previous.WriteVersion
+	previousGeneration := account.kiroCredentialGeneration()
 	if s.kiroCatalogFetcher == nil || s.accountRepo == nil {
 		return previous, errors.New("kiro model catalog fetcher and repository are required")
+	}
+	catalogRepo, ok := s.accountRepo.(KiroModelCatalogRepository)
+	if !ok {
+		return previous, errors.New("kiro model catalog conditional repository is required")
 	}
 	fingerprint := account.kiroCatalogScopeFingerprint()
 	ids, probeErr := s.kiroCatalogFetcher.FetchKiroAvailableModels(ctx, account)
@@ -49,6 +55,7 @@ func (s *AccountUsageService) RefreshKiroModelCatalog(ctx context.Context, accou
 		return catalog, nil
 	}
 	now := time.Now().UTC()
+	catalog.WriteVersion = previousWriteVersion + 1
 	catalog.LastAttemptAt = now.Format(time.RFC3339Nano)
 	if probeErr == nil {
 		catalog.SchemaVersion = kiro.CatalogSchemaVersion
@@ -87,12 +94,27 @@ func (s *AccountUsageService) RefreshKiroModelCatalog(ctx context.Context, accou
 	if err := json.Unmarshal(body, &value); err != nil {
 		return previous, errors.Join(probeErr, fmt.Errorf("encode kiro model catalog map: %w", err))
 	}
+	// Keep the int64 CAS token exact across the generic JSON map conversion.
+	value["write_version"] = catalog.WriteVersion
+	// Lease cancellation is a cheap guard; the conditional UPDATE arbitrates writes.
 	if errors.Is(kiroCatalogLeaseCause(ctx), ErrKiroCatalogLeaseLost) {
 		return previous, errors.Join(probeErr, ErrKiroCatalogLeaseLost)
 	}
-	if err := s.persistSchedulerExtraUpdates(persistCtx, account, map[string]any{kiroDetectedModelCatalogKey: value}, "kiro_model_catalog_persist_failed"); err != nil {
-		return catalog, errors.Join(probeErr, err)
+	applied, err := catalogRepo.UpdateKiroModelCatalogIfCurrent(persistCtx, account.ID, value, previousWriteVersion, previousGeneration)
+	if err != nil {
+		slog.Warn("kiro_model_catalog_persist_failed", "account_id", account.ID, "error", err)
+		return catalog, errors.Join(probeErr, fmt.Errorf("persist kiro model catalog: %w", err))
 	}
+	if !applied {
+		slog.Info("kiro_model_catalog_write_superseded", "account_id", account.ID,
+			"expected_write_version", previousWriteVersion, "expected_credential_generation", previousGeneration,
+			"attempted_write_version", catalog.WriteVersion, "observed", "version_or_credential_generation_mismatch")
+		return previous, nil
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	account.Extra[kiroDetectedModelCatalogKey] = value
 	return catalog, probeErr
 }
 

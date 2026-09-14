@@ -25,10 +25,12 @@ func (f catalogProbeStub) FetchKiroAvailableModels(context.Context, *Account) ([
 
 type catalogRepoStub struct {
 	AccountRepository
-	fresh   *Account
-	updates map[string]any
-	err     error
-	readErr error
+	fresh       *Account
+	updates     map[string]any
+	err         error
+	readErr     error
+	beforeWrite func()
+	writeCalls  int
 }
 
 func (r *catalogRepoStub) GetByID(ctx context.Context, _ int64) (*Account, error) {
@@ -38,10 +40,20 @@ func (r *catalogRepoStub) GetByID(ctx context.Context, _ int64) (*Account, error
 	return r.fresh, r.readErr
 }
 func (r *catalogRepoStub) UpdateExtra(ctx context.Context, _ int64, updates map[string]any) error {
+	r.writeCalls++
+	if r.beforeWrite != nil {
+		r.beforeWrite()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	r.updates = updates
+	if r.err == nil {
+		r.fresh.Extra = shallowCopyMap(r.fresh.Extra)
+		for key, value := range updates {
+			r.fresh.Extra[key] = value
+		}
+	}
 	return r.err
 }
 

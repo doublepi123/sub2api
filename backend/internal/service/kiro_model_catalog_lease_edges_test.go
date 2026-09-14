@@ -33,6 +33,11 @@ func (r *catalogLeaseRepoSpy) UpdateExtra(ctx context.Context, id int64, updates
 	return r.catalogRepoStub.UpdateExtra(ctx, id, updates)
 }
 
+func (r *catalogLeaseRepoSpy) UpdateKiroModelCatalogIfCurrent(ctx context.Context, id int64, catalog map[string]any, version, generation int64) (bool, error) {
+	r.writes.Add(1)
+	return r.catalogRepoStub.UpdateKiroModelCatalogIfCurrent(ctx, id, catalog, version, generation)
+}
+
 func TestRefreshKiroModelCatalog_LeaseLostDuringDetachedReload_DoesNotPersist(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// Given: probe timeout precedes lease expiry by two seconds.
