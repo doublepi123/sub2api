@@ -2626,10 +2626,7 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 			return true
 		}
 		_, allowed, _ := s.kiroCatalogEvaluate(ctx, account, requestedModel)
-		if !allowed {
-			return false
-		}
-		return true
+		return allowed
 	}
 	if account.Platform == PlatformAntigravity {
 		if strings.TrimSpace(requestedModel) == "" {

@@ -208,7 +208,9 @@ func TestBuildKiroSchedulerExtraUpdates_Tier(t *testing.T) {
 			require.InDelta(t, 42.5, updates[kiroSchedUtilizationKey], 0.0001)
 			require.Equal(t, futureReset.UTC().Format(time.RFC3339), updates[kiroSchedResetAtKey])
 			require.NotEmpty(t, updates[kiroSchedUpdatedAtKey])
-			_, err := time.Parse(time.RFC3339, updates[kiroSchedUpdatedAtKey].(string))
+			updatedAt, ok := updates[kiroSchedUpdatedAtKey].(string)
+			require.True(t, ok)
+			_, err := time.Parse(time.RFC3339, updatedAt)
 			require.NoError(t, err)
 
 			if tc.expectTier {
@@ -216,7 +218,9 @@ func TestBuildKiroSchedulerExtraUpdates_Tier(t *testing.T) {
 				require.Equal(t, tc.expectedTier, updates[kiroSchedTierKey])
 				require.Contains(t, updates, kiroSchedTierUpdatedAtKey)
 				require.NotEmpty(t, updates[kiroSchedTierUpdatedAtKey])
-				_, err = time.Parse(time.RFC3339, updates[kiroSchedTierUpdatedAtKey].(string))
+				tierUpdatedAt, ok := updates[kiroSchedTierUpdatedAtKey].(string)
+				require.True(t, ok)
+				_, err = time.Parse(time.RFC3339, tierUpdatedAt)
 				require.NoError(t, err)
 			} else {
 				require.NotContains(t, updates, kiroSchedTierKey)

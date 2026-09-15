@@ -892,7 +892,9 @@ func (s *AccountUsageService) persistAntigravitySchedulerExtras(ctx context.Cont
 		return
 	}
 	updates := buildAntigravitySchedulerExtraUpdates(usage.AntigravityQuota)
-	s.persistSchedulerExtraUpdates(ctx, account, updates, "antigravity_sched_persist_failed")
+	// Failures are already logged inside persistSchedulerExtraUpdates; this
+	// best-effort persistence must not abort usage recording.
+	_ = s.persistSchedulerExtraUpdates(ctx, account, updates, "antigravity_sched_persist_failed")
 }
 
 func (s *AccountUsageService) persistSchedulerExtraUpdates(ctx context.Context, account *Account, updates map[string]any, warnEvent string) error {
