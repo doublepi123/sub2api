@@ -1888,6 +1888,10 @@ func (s *stubAccountRepo) Update(ctx context.Context, account *service.Account) 
 	return errors.New("not implemented")
 }
 
+func (s *stubAccountRepo) UpdateWithKiroCredentialGeneration(ctx context.Context, account *service.Account) error {
+	return errors.New("not implemented")
+}
+
 func (s *stubAccountRepo) UpdateWithAccountBillingSettings(
 	ctx context.Context,
 	account *service.Account,
