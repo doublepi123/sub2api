@@ -1,0 +1,88 @@
+name: Docker Hub Build
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v[0-9]*'
+    paths:
+      - '.github/workflows/dockerhub-build.yml'
+      - 'Dockerfile'
+      - 'backend/**'
+      - 'frontend/**'
+      - 'docs/legal/**'
+      - 'deploy/docker-entrypoint.sh'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Docker image tag
+        required: true
+        default: manual
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  DOCKER_IMAGE: doublepi/sub2api
+
+concurrency:
+  group: dockerhub-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    if: github.repository == 'doublepi123/sub2api'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Docker Hub credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          test -n "$DOCKERHUB_USERNAME"
+          test -n "$DOCKERHUB_TOKEN"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Log in to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Set up QEMU
+        run: docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+      - name: Set up Docker Buildx
+        run: |
+          docker buildx create --name sub2api-builder --driver docker-container --use
+          docker buildx inspect --bootstrap
+
+      - name: Build and push
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tags=(--tag "$DOCKER_IMAGE:sha-${GITHUB_SHA::7}")
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            tags+=(--tag "$DOCKER_IMAGE:main" --tag "$DOCKER_IMAGE:latest")
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tags+=(--tag "$DOCKER_IMAGE:${GITHUB_REF_NAME#v}")
+          fi
+          if [[ -n "$INPUT_TAG" ]]; then
+            tags+=(--tag "$DOCKER_IMAGE:$INPUT_TAG")
+          fi
+
+          version="$(backend/scripts/resolve-version.sh)"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            "${tags[@]}" \
+            --build-arg GOLANG_IMAGE=golang:1.27.0-alpine \
+            --build-arg "VERSION=$version" \
+            --cache-from "type=registry,ref=$DOCKER_IMAGE:buildcache" \
+            --cache-to "type=registry,ref=$DOCKER_IMAGE:buildcache,mode=max" \
+            .
