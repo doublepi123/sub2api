@@ -885,42 +885,57 @@ func NewGatewayService(
 	return svc
 }
 
-// GenerateSessionHash 从预解析请求计算粘性会话 hash
+const clientSessionStickySeedPrefix = "sess:"
+
+// GenerateSessionHash 从预解析请求计算粘性会话 hash。
+//
+// 优先级：
+//  1. 带 cache_control ephemeral 的可缓存前缀（与上游 prompt cache 同源）
+//  2. 显式 header session_id（SessionContext.ClientSessionID，按 API Key 隔离）
+//  3. metadata.user_id 内嵌 session
+//  4. session 上下文 + model + tools + system + 首条 user（会话内稳定，避免每轮换号）
 func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if parsed == nil {
 		return ""
 	}
 
-	// 1. 最高优先级：从 metadata.user_id 提取 session_xxx
-	if parsed.MetadataUserID != "" {
-		uid := ParseMetadataUserID(parsed.MetadataUserID)
-		if uid != nil && uid.SessionID != "" {
-			slog.Info("sticky.hash_source",
-				"source", "metadata_user_id",
-				"session_id", uid.SessionID,
-				"device_id", uid.DeviceID,
-				"is_new_format", uid.IsNewFormat,
-			)
-			return uid.SessionID
-		}
-		slog.Info("sticky.hash_metadata_parse_failed",
-			"metadata_user_id", parsed.MetadataUserID,
-			"parsed_nil", uid == nil,
-		)
-	}
-
-	// 2. 提取带 cache_control: {type: "ephemeral"} 的内容
+	// 1. 带 cache_control: {type: "ephemeral"} 的内容与上游 prompt cache 同源，
+	// 优先于 header，避免同一 API Key 下不同 session_id 把同一可缓存前缀拆到不同账号。
+	// 种子必须混入 APIKeyID，否则同 group 下不同用户的相同 system 前缀会共享一条绑定。
 	cacheableContent := s.extractCacheableContent(parsed)
 	if cacheableContent != "" {
-		hash := s.hashContent(cacheableContent)
-		slog.Info("sticky.hash_source",
-			"source", "cacheable_content",
-			"hash", hash,
-		)
+		hash := s.hashContent(isolateCacheableStickySeed(parsed.SessionContext, cacheableContent))
+		s.logStickyHashSource("cacheable_content", hash, 0)
 		return hash
 	}
 
-	// 3. 最后 fallback: 使用 session上下文 + system + 所有消息的完整摘要串
+	// 2. 客户端显式 session_id。种子必须混入 APIKeyID，否则同 group 下
+	// 不同用户发相同（或低熵）header 会共享一条 Redis sticky 绑定。
+	if parsed.SessionContext != nil {
+		if sid := strings.TrimSpace(parsed.SessionContext.ClientSessionID); sid != "" {
+			hash := s.hashContent(isolateClientSessionStickySeed(parsed.SessionContext.APIKeyID, sid))
+			s.logStickyHashSource("client_session_id", hash, 0)
+			return hash
+		}
+	}
+
+	// 3. 从 metadata.user_id 提取 session_xxx
+	if parsed.MetadataUserID != "" {
+		uid := ParseMetadataUserID(parsed.MetadataUserID)
+		if uid != nil && uid.SessionID != "" {
+			s.logStickyHashSource("metadata_user_id", uid.SessionID, 0)
+			return uid.SessionID
+		}
+		if s != nil && s.debugModelRoutingEnabled() {
+			slog.Debug("sticky.hash_metadata_parse_failed",
+				"metadata_user_id", parsed.MetadataUserID,
+				"parsed_nil", uid == nil,
+			)
+		}
+	}
+
+	// 4. fallback: session 上下文 + model + tools + system + 首条 user
+	// （后续 turn 追加消息不改变 hash）
 	var combined strings.Builder
 	// 混入请求上下文区分因子，避免不同用户相同消息产生相同 hash
 	if parsed.SessionContext != nil {
@@ -931,24 +946,77 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		_, _ = combined.WriteString(strconv.FormatInt(parsed.SessionContext.APIKeyID, 10))
 		_, _ = combined.WriteString("|")
 	}
-	if systemText := extractTextFromSystemRaw(parsed.SystemRaw()); systemText != "" {
-		_, _ = combined.WriteString(systemText)
-	}
-	contentStart := combined.Len()
-	appendMessageTextsFromRaw(&combined, parsed.MessagesRaw())
-	if combined.Len() == contentStart {
-		appendResponsesSessionAnchorFromRaw(&combined, parsed.InputRaw())
-	}
+	appendStickyContentAnchor(&combined, parsed)
 	if combined.Len() > 0 {
-		hash := s.hashContent(combined.String())
-		slog.Info("sticky.hash_source",
-			"source", "message_content_fallback",
-			"hash", hash,
-			"content_len", combined.Len(),
-		)
+		hash := hashStickyContent(combined.String())
+		s.logStickyHashSource("message_content_fallback", hash, combined.Len())
 		return hash
 	}
 
+	return ""
+}
+
+func isolateClientSessionStickySeed(apiKeyID int64, sid string) string {
+	return clientSessionStickySeedPrefix + strconv.FormatInt(apiKeyID, 10) + ":" + sid
+}
+
+func isolateCacheableStickySeed(ctx *SessionContext, cacheableContent string) string {
+	if ctx == nil {
+		return cacheableContent
+	}
+	return "key:" + strconv.FormatInt(ctx.APIKeyID, 10) + "|" + cacheableContent
+}
+
+func (s *GatewayService) logStickyHashSource(source, hash string, contentLen int) {
+	if s == nil || !s.debugModelRoutingEnabled() {
+		return
+	}
+	if contentLen > 0 {
+		slog.Debug("sticky.hash_source", "source", source, "hash", hash, "content_len", contentLen)
+		return
+	}
+	slog.Debug("sticky.hash_source", "source", source, "hash", hash)
+}
+
+// appendStickyContentAnchor writes turn-stable request fields that distinguish
+// otherwise identical first-user prompts (model / tools / system / first user).
+func appendStickyContentAnchor(builder *strings.Builder, parsed *ParsedRequest) {
+	if builder == nil || parsed == nil {
+		return
+	}
+	if model := strings.TrimSpace(parsed.Model); model != "" {
+		_, _ = builder.WriteString("model:")
+		_, _ = builder.WriteString(model)
+		_, _ = builder.WriteString("|")
+	}
+	if tools := extractStickyToolsAnchor(parsed.Body); tools != "" {
+		_, _ = builder.WriteString("tools:")
+		_, _ = builder.WriteString(tools)
+		_, _ = builder.WriteString("|")
+	}
+	if systemText := extractTextFromSystemRaw(parsed.SystemRaw()); systemText != "" {
+		_, _ = builder.WriteString(systemText)
+	}
+	if !appendFirstUserMessageTextFromRaw(builder, parsed.MessagesRaw()) {
+		appendResponsesSessionAnchorFromRaw(builder, parsed.InputRaw())
+	}
+}
+
+func extractStickyToolsAnchor(body *RequestBodyRef) string {
+	if body == nil {
+		return ""
+	}
+	raw := body.Bytes()
+	if len(raw) == 0 {
+		return ""
+	}
+	root := parseRawJSONView(raw)
+	if tools := root.Get("tools"); tools.Exists() {
+		return tools.Raw
+	}
+	if functions := root.Get("functions"); functions.Exists() {
+		return functions.Raw
+	}
 	return ""
 }
 
@@ -1107,27 +1175,57 @@ func extractTextFromContentRaw(content gjson.Result) string {
 	return ""
 }
 
-func appendMessageTextsFromRaw(builder *strings.Builder, raw []byte) {
+// appendFirstUserMessageTextFromRaw writes only the first user/user-role turn.
+// Later turns must not change the sticky key, otherwise each agent round looks
+// like a new session and the scheduler rotates accounts (losing prefix cache).
+func appendFirstUserMessageTextFromRaw(builder *strings.Builder, raw []byte) bool {
 	if builder == nil || len(raw) == 0 {
-		return
+		return false
 	}
 	messages := parseRawJSONView(raw)
 	if !messages.IsArray() {
-		return
+		return false
 	}
+	found := false
 	messages.ForEach(func(_, msg gjson.Result) bool {
-		if content := msg.Get("content"); content.Exists() {
-			_, _ = builder.WriteString(extractTextFromContentRaw(content))
+		if !isStickySessionUserRole(msg.Get("role").String()) {
 			return true
 		}
-		parts := msg.Get("parts")
-		if parts.IsArray() {
-			parts.ForEach(func(_, part gjson.Result) bool {
-				if text := part.Get("text").String(); text != "" {
-					_, _ = builder.WriteString(text)
-				}
-				return true
-			})
+		before := builder.Len()
+		appendMessageTextFromRaw(builder, msg)
+		if builder.Len() > before {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func isStickySessionUserRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "", "user":
+		return true
+	default:
+		return false
+	}
+}
+
+func appendMessageTextFromRaw(builder *strings.Builder, msg gjson.Result) {
+	if builder == nil {
+		return
+	}
+	if content := msg.Get("content"); content.Exists() {
+		_, _ = builder.WriteString(extractTextFromContentRaw(content))
+		return
+	}
+	parts := msg.Get("parts")
+	if !parts.IsArray() {
+		return
+	}
+	parts.ForEach(func(_, part gjson.Result) bool {
+		if text := part.Get("text").String(); text != "" {
+			_, _ = builder.WriteString(text)
 		}
 		return true
 	})
@@ -1237,9 +1335,13 @@ func extractCacheableTextFromMessagesRaw(raw []byte) string {
 	return text
 }
 
-func (s *GatewayService) hashContent(content string) string {
+func hashStickyContent(content string) string {
 	h := xxhash.Sum64String(content)
 	return strconv.FormatUint(h, 36)
+}
+
+func (s *GatewayService) hashContent(content string) string {
+	return hashStickyContent(content)
 }
 
 // GetAccessToken 获取账号凭证
