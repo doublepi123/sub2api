@@ -27,10 +27,11 @@ func TestGroupUsageRollupTriggerInvalidatesCascadedHistoricalDelete(t *testing.T
 			defer func() { _ = tx.Rollback() }()
 
 			_, err := tx.ExecContext(ctx, `
+				SET LOCAL TIME ZONE 'UTC';
 				INSERT INTO groups (id) VALUES (10);
 				INSERT INTO users (id) VALUES (1);
 				INSERT INTO usage_logs (id, user_id, group_id, actual_cost, created_at)
-				VALUES (1, 1, 10, 1.25, TIMESTAMPTZ '2020-01-02 08:00:00+08');
+				VALUES (1, 1, 10, 1.25, TIMESTAMPTZ '2020-01-01 16:30:00+00');
 				UPDATE usage_group_rollup_state
 				SET closed_before = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
 				WHERE id = 1;
@@ -133,7 +134,8 @@ func TestGroupUsageRollupTriggerSerializesInsertTransactionAcrossMidnight(t *tes
 		INSERT INTO groups (id) VALUES (10);
 		INSERT INTO users (id) VALUES (1);
 		UPDATE usage_group_rollup_state
-		SET closed_before = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+		SET closed_before = DATE '2026-08-16',
+			timezone_name = 'Asia/Shanghai'
 		WHERE id = 1;
 	`)
 	require.NoError(t, err)
@@ -158,8 +160,9 @@ func TestGroupUsageRollupTriggerSerializesInsertTransactionAcrossMidnight(t *tes
 	insertResult := make(chan error, 1)
 	go func() {
 		_, insertErr := insertTx.ExecContext(ctx, `
+			SET LOCAL TIME ZONE 'UTC';
 			INSERT INTO usage_logs (id, user_id, group_id, actual_cost, created_at)
-			VALUES (1, 1, 10, 1.25, CURRENT_TIMESTAMP)
+			VALUES (1, 1, 10, 1.25, TIMESTAMPTZ '2026-08-16 16:30:00+00')
 		`)
 		insertResult <- insertErr
 	}()
@@ -174,7 +177,7 @@ func TestGroupUsageRollupTriggerSerializesInsertTransactionAcrossMidnight(t *tes
 
 	_, err = syncTx.ExecContext(ctx, `
 		UPDATE usage_group_rollup_state
-		SET closed_before = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date + 1
+		SET closed_before = DATE '2026-08-18'
 		WHERE id = 1
 	`)
 	require.NoError(t, err)
@@ -188,17 +191,13 @@ func TestGroupUsageRollupTriggerSerializesInsertTransactionAcrossMidnight(t *tes
 	}
 	require.NoError(t, insertTx.Commit())
 
-	var currentDate string
-	require.NoError(t, integrationDB.QueryRowContext(ctx, `
-		SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::text
-	`).Scan(&currentDate))
 	var closedBefore string
 	err = integrationDB.QueryRowContext(ctx, fmt.Sprintf(
 		"SELECT closed_before::text FROM %s.usage_group_rollup_state WHERE id = 1",
 		pq.QuoteIdentifier(schema),
 	)).Scan(&closedBefore)
 	require.NoError(t, err)
-	require.Equal(t, currentDate, closedBefore)
+	require.Equal(t, "2026-08-17", closedBefore)
 }
 
 func TestGroupUsageRollupTriggerKeepsWatermarkForTodayInsert(t *testing.T) {
@@ -209,19 +208,21 @@ func TestGroupUsageRollupTriggerKeepsWatermarkForTodayInsert(t *testing.T) {
 	defer func() { _ = tx.Rollback() }()
 	require.NoError(t, setGroupUsageRollupTriggerTimeZone(ctx, tx, "Asia/Shanghai"))
 	_, err := tx.ExecContext(ctx, `
+		SET LOCAL TIME ZONE 'UTC';
 		INSERT INTO groups (id) VALUES (10);
 		INSERT INTO users (id) VALUES (1);
 		UPDATE usage_group_rollup_state
-		SET closed_before = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+		SET closed_before = DATE '2026-08-17',
+			timezone_name = 'Asia/Shanghai'
 		WHERE id = 1;
 		INSERT INTO usage_logs (id, user_id, group_id, actual_cost, created_at)
-		VALUES (1, 1, 10, 1.25, CURRENT_TIMESTAMP);
+		VALUES (1, 1, 10, 1.25, TIMESTAMPTZ '2026-08-16 16:30:00+00');
 	`)
 	require.NoError(t, err)
 
 	var unchanged bool
 	err = tx.QueryRowContext(ctx, `
-		SELECT closed_before = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+		SELECT closed_before = DATE '2026-08-17'
 		FROM usage_group_rollup_state
 		WHERE id = 1
 	`).Scan(&unchanged)
@@ -229,14 +230,14 @@ func TestGroupUsageRollupTriggerKeepsWatermarkForTodayInsert(t *testing.T) {
 	require.True(t, unchanged)
 }
 
-func TestGroupUsageRollupTriggerUsesSessionTimezoneAcrossDST(t *testing.T) {
+func TestGroupUsageRollupTriggerUsesStateTimezoneAcrossDST(t *testing.T) {
 	ctx := context.Background()
 	schema := createGroupUsageRollupTriggerTestSchema(t, ctx, false)
 
 	tx := beginGroupUsageRollupTriggerTestTx(t, ctx, schema)
 	defer func() { _ = tx.Rollback() }()
 	_, err := tx.ExecContext(ctx, `
-		SET LOCAL TIME ZONE 'America/New_York';
+		SET LOCAL TIME ZONE 'UTC';
 		INSERT INTO groups (id) VALUES (10);
 		INSERT INTO users (id) VALUES (1);
 		UPDATE usage_group_rollup_state
@@ -451,6 +452,7 @@ func createGroupUsageRollupTriggerTestSchema(t *testing.T, ctx context.Context, 
 	for _, migrationName := range []string{
 		"222_group_usage_daily_rollups.sql",
 		"223_group_usage_rollup_timezone.sql",
+		"228_group_usage_rollup_trigger_timezone.sql",
 	} {
 		migrationSQL, readErr := migrations.FS.ReadFile(migrationName)
 		require.NoError(t, readErr)
