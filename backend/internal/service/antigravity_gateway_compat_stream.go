@@ -303,6 +303,14 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 			resetAntigravityCompatTimer(timeoutTimer, timeout)
 			s.observeAntigravityGeminiSSELine(c, event.line)
 			session.consume(event.line)
+			if session.processor.MalformedFunctionCall() {
+				logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in %s", prefix)
+				if !writer.Wrote() && !writer.Disconnected() {
+					return nil, newAntigravityMalformedFunctionCallFailoverError()
+				}
+				writeAntigravityCompatStreamError(c, adapter, writer, "malformed_function_call")
+				return session.collectResult(writer.Disconnected()), antigravity.ErrMalformedFunctionCall
+			}
 
 		case <-timeoutCh:
 			if writer.Disconnected() {

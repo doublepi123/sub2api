@@ -8,8 +8,10 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/stretchr/testify/require"
 )
 
@@ -476,6 +478,30 @@ func TestCalculateCost_LongContextAppliesMultiplierToCacheCreation5mAnd1h(t *tes
 		"both 5m and 1h cache_creation prices should be scaled by LongContextInputMultiplier")
 }
 
+// TestGeminiFlashPromoPricingExpiry 是一条日期绊线：Google 对 gemini-3.7-flash 与
+// gemini-3.8-flash 的促销价均只持续到 2026-12-31，2027-01-01 起官方价翻倍为
+// $1.50/$7.50/$0.15 per MTok。远程 LiteLLM 价格目录并不可靠地收录新 Flash 版本
+// （gemini-3.7-flash 上线数周后目录里仍无条目），因此 fallbackPrices 实际就是长期
+// 生效价；促销价到期后本测试会失败，强制更新，避免网关按半价长期少计费。
+func TestGeminiFlashPromoPricingExpiry(t *testing.T) {
+	promoEnd := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	if timezone.Now().UTC().Before(promoEnd) {
+		t.Skip("Gemini Flash 促销价仍在有效期内")
+	}
+
+	svc := newTestBillingService()
+	for _, model := range []string{"gemini-3.7-flash", "gemini-3.8-flash"} {
+		t.Run(model, func(t *testing.T) {
+			pricing := svc.getFallbackPricing(model)
+			require.NotNil(t, pricing)
+			require.Equal(t, 1.5e-6, pricing.InputPricePerToken,
+				"%s 促销价已于 2026-12-31 到期，请把 fallback 更新为 $1.50/$7.50/$0.15 per MTok", model)
+			require.Equal(t, 7.5e-6, pricing.OutputPricePerToken)
+			require.Equal(t, 0.15e-6, pricing.CacheReadPricePerToken)
+		})
+	}
+}
+
 func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -495,6 +521,27 @@ func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
 		{name: "claude opus 4.5 alt separator", model: "claude-opus-4-5-20260101", expectedInput: 5e-6},
 		{name: "claude generic model fallback sonnet", model: "claude-foo-bar", expectedInput: 3e-6},
 		{name: "gemini explicit fallback", model: "gemini-3-1-pro", expectedInput: 2e-6},
+		{
+			name:              "gemini 3.8 flash",
+			model:             "gemini-3.8-flash",
+			expectedInput:     0.75e-6,
+			expectedOutput:    floatPtr(3.75e-6),
+			expectedCacheRead: floatPtr(0.075e-6),
+		},
+		{
+			name:              "gemini 3.8 flash tiered",
+			model:             "gemini-3.8-flash-tiered",
+			expectedInput:     0.75e-6,
+			expectedOutput:    floatPtr(3.75e-6),
+			expectedCacheRead: floatPtr(0.075e-6),
+		},
+		{
+			name:              "gemini 3.8 flash dashed variant",
+			model:             "gemini-3-8-flash",
+			expectedInput:     0.75e-6,
+			expectedOutput:    floatPtr(3.75e-6),
+			expectedCacheRead: floatPtr(0.075e-6),
+		},
 		{name: "gemini unknown no fallback", model: "gemini-2.0-pro", expectNilPricing: true},
 		{name: "openai gpt5.4", model: "gpt-5.4", expectedInput: 2.5e-6},
 		{name: "openai gpt5.4 mini", model: "gpt-5.4-mini", expectedInput: 7.5e-7},

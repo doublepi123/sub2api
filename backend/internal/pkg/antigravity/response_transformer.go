@@ -3,12 +3,37 @@ package antigravity
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"sync/atomic"
 	"time"
 )
+
+// ErrMalformedFunctionCall indicates that Gemini stopped because it generated
+// an invalid function call. Callers must not turn this into a successful empty
+// assistant turn; the request can be retried while no downstream bytes have
+// been committed.
+var ErrMalformedFunctionCall = errors.New("gemini returned MALFORMED_FUNCTION_CALL")
+
+// HasMalformedFunctionCall reports whether the first Gemini candidate ended
+// with MALFORMED_FUNCTION_CALL.
+func HasMalformedFunctionCall(geminiResp *GeminiResponse) bool {
+	return geminiResp != nil &&
+		len(geminiResp.Candidates) > 0 &&
+		strings.EqualFold(strings.TrimSpace(geminiResp.Candidates[0].FinishReason), "MALFORMED_FUNCTION_CALL")
+}
+
+func logMalformedFunctionCall(geminiResp *GeminiResponse, originalModel, source string) {
+	log.Printf("[Antigravity] MALFORMED_FUNCTION_CALL detected in %s for model %s", source, originalModel)
+	if geminiResp == nil || len(geminiResp.Candidates) == 0 || geminiResp.Candidates[0].Content == nil {
+		return
+	}
+	if b, err := json.Marshal(geminiResp.Candidates[0].Content); err == nil {
+		log.Printf("[Antigravity] Malformed content: %s", string(b))
+	}
+}
 
 // TransformGeminiToClaude 将 Gemini 响应转换为 Claude 格式（非流式）
 func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *ClaudeUsage, error) {
@@ -32,6 +57,11 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 		v1Resp.Response = directResp
 		v1Resp.ResponseID = directResp.ResponseID
 		v1Resp.ModelVersion = directResp.ModelVersion
+	}
+
+	if HasMalformedFunctionCall(&v1Resp.Response) {
+		logMalformedFunctionCall(&v1Resp.Response, originalModel, "response")
+		return nil, nil, ErrMalformedFunctionCall
 	}
 
 	// 使用处理器转换
@@ -259,14 +289,6 @@ func (p *NonStreamingProcessor) buildResponse(geminiResp *GeminiResponse, respon
 	var finishReason string
 	if len(geminiResp.Candidates) > 0 {
 		finishReason = geminiResp.Candidates[0].FinishReason
-		if finishReason == "MALFORMED_FUNCTION_CALL" {
-			log.Printf("[Antigravity] MALFORMED_FUNCTION_CALL detected in response for model %s", originalModel)
-			if geminiResp.Candidates[0].Content != nil {
-				if b, err := json.Marshal(geminiResp.Candidates[0].Content); err == nil {
-					log.Printf("[Antigravity] Malformed content: %s", string(b))
-				}
-			}
-		}
 	}
 
 	stopReason := "end_turn"
