@@ -96,8 +96,10 @@ describe('useModelWhitelist', () => {
   it('gemini 模型列表包含原生生图模型', () => {
     const models = getModelsByPlatform('gemini')
 
+    expect(models).toContain('gemini-3.7-flash')
     expect(models).toContain('gemini-2.5-flash-image')
     expect(models).toContain('gemini-3.1-flash-image')
+    expect(models.indexOf('gemini-3.7-flash')).toBeLessThan(models.indexOf('gemini-3.1-flash-image'))
     expect(models.indexOf('gemini-3.1-flash-image')).toBeLessThan(models.indexOf('gemini-2.0-flash'))
     expect(models.indexOf('gemini-2.5-flash-image')).toBeLessThan(models.indexOf('gemini-2.5-flash'))
   })
@@ -113,6 +115,32 @@ describe('useModelWhitelist', () => {
     const models = getModelsByPlatform('antigravity')
 
     expect(models).toContain('gemini-3.1-pro')
+  })
+
+  it('antigravity 模型列表包含 Gemini 3.7 Flash 推理档位', () => {
+    const models = getModelsByPlatform('antigravity')
+
+    expect(models).toContain('gemini-3.7-flash')
+    expect(models).toContain('gemini-3.7-flash-low')
+    expect(models).toContain('gemini-3.7-flash-medium')
+    expect(models).toContain('gemini-3.7-flash-high')
+    expect(models).toContain('gemini-3.7-flash-tiered')
+  })
+
+  it('gemini 模型列表包含 Gemini 3.8 Flash', () => {
+    const models = getModelsByPlatform('gemini')
+
+    expect(models).toContain('gemini-3.8-flash')
+  })
+
+  it('antigravity 模型列表包含 Gemini 3.8 Flash 推理档位', () => {
+    const models = getModelsByPlatform('antigravity')
+
+    expect(models).toContain('gemini-3.8-flash')
+    expect(models).toContain('gemini-3.8-flash-low')
+    expect(models).toContain('gemini-3.8-flash-medium')
+    expect(models).toContain('gemini-3.8-flash-high')
+    expect(models).toContain('gemini-3.8-flash-tiered')
   })
 
   it('whitelist 模式会忽略通配符条目', () => {

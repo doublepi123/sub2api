@@ -26,6 +26,91 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+      <div v-if="account.platform === 'kiro'" class="space-y-4">
+        <div
+          v-if="isKiroSocialAccount"
+          class="rounded-lg bg-blue-50 p-3 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300"
+          data-testid="kiro-social-account-hint"
+        >
+          {{ t('admin.accounts.kiro.socialAccountHint') }}
+        </div>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.accessToken') }}</label>
+            <input
+              v-model="editKiroAccessToken"
+              data-testid="edit-kiro-access-token"
+              type="password"
+              class="input font-mono"
+              autocomplete="new-password"
+              data-1p-ignore
+              :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+            />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.refreshToken') }}</label>
+            <input
+              v-model="editKiroRefreshToken"
+              data-testid="edit-kiro-refresh-token"
+              type="password"
+              class="input font-mono"
+              autocomplete="new-password"
+              data-1p-ignore
+              :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+            />
+          </div>
+          <template v-if="!isKiroSocialAccount">
+            <div>
+              <label class="input-label">{{ t('admin.accounts.kiro.clientId') }}</label>
+              <input
+                v-model="editKiroClientId"
+                data-testid="edit-kiro-client-id"
+                type="password"
+                class="input font-mono"
+                autocomplete="new-password"
+                data-1p-ignore
+                :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.accounts.kiro.clientSecret') }}</label>
+              <input
+                v-model="editKiroClientSecret"
+                data-testid="edit-kiro-client-secret"
+                type="password"
+                class="input font-mono"
+                autocomplete="new-password"
+                data-1p-ignore
+                :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+              />
+            </div>
+          </template>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.region') }}</label>
+            <input v-model="editKiroRegion" data-testid="edit-kiro-region" type="text" required class="input font-mono" />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.profileArn') }}</label>
+            <input v-model="editKiroProfileArn" data-testid="edit-kiro-profile-arn" type="text" :required="!isKiroSocialAccount" class="input font-mono" />
+          </div>
+        </div>
+        <p class="input-hint">{{ isKiroSocialAccount ? t('admin.accounts.kiro.socialHint') : t('admin.accounts.kiro.editSecretsHint') }}</p>
+
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <div class="flex items-center justify-between gap-4">
+            <label class="input-label mb-0">{{ t('admin.accounts.usageWindow.kiroCatalogMode') }}</label>
+            <div class="w-44 flex-shrink-0">
+              <Select
+                v-model="kiroModelCatalogMode"
+                data-testid="edit-kiro-model-catalog-mode"
+                :options="kiroModelCatalogModeOptions"
+              />
+            </div>
+          </div>
+          <p class="input-hint break-words leading-relaxed">{{ t('admin.accounts.usageWindow.kiroCatalogModeHint') }}</p>
+        </div>
+      </div>
+
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
         <div v-if="!isCNApiKeyAccount || editApiProtocol !== 'adaptive'">
@@ -3024,6 +3109,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 
 import { adminAPI } from '@/api/admin'
+import { SCHEDULING_THRESHOLD_PLATFORMS } from '@/api/admin/settings'
 import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
 import type {
   Account,
@@ -3034,6 +3120,7 @@ import type {
   OpenAICompactMode,
   OpenAIResponsesMode,
   OpenAIEndpointCapability,
+  KiroModelCatalogMode,
   OllamaCloudUsageState,
   GrokMediaEligibilityMode,
   GrokMediaEligibilityState
@@ -3182,6 +3269,29 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const editKiroAccessToken = ref('')
+const editKiroRefreshToken = ref('')
+const editKiroClientId = ref('')
+const editKiroClientSecret = ref('')
+const editKiroRegion = ref('us-east-1')
+const editKiroProfileArn = ref('arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX')
+
+const isKiroSocialAccount = computed(() => {
+  if (props.account?.platform !== 'kiro') return false
+  const creds = props.account?.credentials as Record<string, unknown> | undefined
+  const authMethod = String(creds?.auth_method || '').toLowerCase()
+  if (authMethod === 'social' || authMethod === 'google' || authMethod === 'github') {
+    return true
+  }
+  if (authMethod === 'idc' || authMethod === 'builder_id') {
+    return false
+  }
+  const status = props.account?.credentials_status as Record<string, unknown> | undefined
+  if (status && !status.has_client_id && !status.has_client_secret) {
+    return true
+  }
+  return false
+})
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
@@ -3457,6 +3567,10 @@ const readUpstreamRequestIdHeader = (extra: unknown): string => {
   const value = (extra as Record<string, unknown> | undefined)?.upstream_request_id_header
   return typeof value === 'string' ? value : ''
 }
+const readKiroModelCatalogMode = (extra: unknown): KiroModelCatalogMode => {
+  const value = (extra as Record<string, unknown> | undefined)?.kiro_model_catalog_mode
+  return value === 'off' || value === 'shadow' || value === 'enforce' ? value : ''
+}
 const allowOverages = ref(false) // For antigravity accounts: enable AI Credits overages
 const antigravityProjectId = ref('')
 const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
@@ -3519,6 +3633,8 @@ const openAILongContextBillingEnabled = ref(false)
 // 存于 credentials.plan_type;'' 表示清空/自动识别
 const editPlanType = ref<string>('')
 const openAICompactMode = ref<OpenAICompactMode>('auto')
+// Kiro 模型目录门禁模式，存于 extra.kiro_model_catalog_mode;'' 表示跟随平台默认
+const kiroModelCatalogMode = ref<KiroModelCatalogMode>('')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 // Images 非流式响应缺 b64_json 时由网关下载 url 回填（仅 OpenAI API Key）。
 const openAIImagesUrlToB64JsonEnabled = ref(false)
@@ -3655,6 +3771,12 @@ const openAICompactModeOptions = computed(() => [
   { value: 'auto', label: t('admin.accounts.openai.compactModeAuto') },
   { value: 'force_on', label: t('admin.accounts.openai.compactModeForceOn') },
   { value: 'force_off', label: t('admin.accounts.openai.compactModeForceOff') }
+])
+const kiroModelCatalogModeOptions = computed(() => [
+  { value: '', label: t('admin.accounts.usageWindow.kiroCatalogModeInherit') },
+  { value: 'off', label: t('admin.accounts.usageWindow.kiroCatalogModeOff') },
+  { value: 'shadow', label: t('admin.accounts.usageWindow.kiroCatalogModeShadow') },
+  { value: 'enforce', label: t('admin.accounts.usageWindow.kiroCatalogModeEnforce') }
 ])
 // OpenAI 订阅档位手动覆盖选项(清空 + Plus/Pro/Free;别名/自定义值友好显示且保留 canonical)
 const planTypeOptions = computed(() =>
@@ -3964,6 +4086,14 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
+  editKiroAccessToken.value = ''
+  editKiroRefreshToken.value = ''
+  editKiroClientId.value = ''
+  editKiroClientSecret.value = ''
+  editKiroRegion.value = typeof credentials?.region === 'string' ? credentials.region : 'us-east-1'
+  editKiroProfileArn.value = typeof credentials?.profile_arn === 'string'
+    ? credentials.profile_arn
+    : 'arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX'
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
   autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
   editVertexProjectId.value = ''
@@ -3986,6 +4116,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	openAIImagesUrlToB64JsonEnabled.value = extra?.images_url_to_b64_json === true
 	autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
 	autoPause7dThreshold.value = typeof extra?.auto_pause_7d_threshold === 'number' ? extra.auto_pause_7d_threshold * 100 : null
+	kiroModelCatalogMode.value = readKiroModelCatalogMode(extra)
 	autoPause5hDisabled.value = extra?.auto_pause_5h_disabled === true
 	autoPause7dDisabled.value = extra?.auto_pause_7d_disabled === true
 	autoResetCreditEnabled.value = extra?.auto_reset_credit_enabled === true
@@ -4613,7 +4744,7 @@ const applyTempUnschedConfig = (credentials: Record<string, unknown>) => {
 
 
 function supportsAccountSchedulingThresholdOverridePlatform(platform: Account['platform'] | undefined) {
-  return platform === 'openai' || platform === 'anthropic' || platform === 'grok'
+  return SCHEDULING_THRESHOLD_PLATFORMS.includes(platform as (typeof SCHEDULING_THRESHOLD_PLATFORMS)[number])
 }
 
 function normalizeAccountSchedulingThresholdOverride(value: unknown): number | null {
@@ -4990,6 +5121,31 @@ const handleSubmit = async () => {
       if (upstreamBillingRateSyncEnabled.value) {
         delete updatePayload.rate_multiplier
       }
+    }
+
+    if (props.account.platform === 'kiro') {
+      const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
+      const newCredentials: Record<string, unknown> = {
+        ...currentCredentials,
+        region: editKiroRegion.value.trim() || 'us-east-1'
+      }
+      const profileArn = editKiroProfileArn.value.trim()
+      if (profileArn) {
+        newCredentials.profile_arn = profileArn
+      } else {
+        delete newCredentials.profile_arn
+      }
+      if (editKiroAccessToken.value.trim()) newCredentials.access_token = editKiroAccessToken.value.trim()
+      if (editKiroRefreshToken.value.trim()) newCredentials.refresh_token = editKiroRefreshToken.value.trim()
+      if (editKiroClientId.value.trim()) newCredentials.client_id = editKiroClientId.value.trim()
+      if (editKiroClientSecret.value.trim()) newCredentials.client_secret = editKiroClientSecret.value.trim()
+      updatePayload.credentials = newCredentials
+
+      // 后端以 JSONB `||` 合并 extra，省略键不会删除旧值，因此 '' 也必须显式落键，
+      // 否则管理员永远无法把模式改回跟随平台默认。
+      const currentExtra = (updatePayload.extra as Record<string, unknown>) ||
+        (props.account.extra as Record<string, unknown>) || {}
+      updatePayload.extra = { ...currentExtra, kiro_model_catalog_mode: kiroModelCatalogMode.value }
     }
 
     // For apikey type, handle credentials update

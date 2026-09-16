@@ -636,6 +636,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if input.Notes != nil {
 		account.Notes = normalizeAccountNotes(input.Notes)
 	}
+	previousCredentials := shallowCopyMap(account.Credentials)
 	if account.IsCredentialShadow() && input.Credentials != nil {
 		account.Credentials = sanitizeSparkShadowCredentials(input.Credentials)
 	} else if len(input.Credentials) > 0 {
@@ -689,6 +690,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			OllamaCloudUsageAutoRefreshExtraKey,
 			OllamaCloudUsageSnapshotExtraKey,
 			OpenAIAutoResetCreditStateExtraKey,
+			kiroDetectedModelCatalogKey,
+			kiroCredentialGenerationKey,
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v
@@ -838,6 +841,12 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 
 	billingSettingsAppliedAtomically := false
+	if bumpKiroCredentialGenerationOnPrincipalChange(account, previousCredentials) {
+		if err := updateWithKiroCredentialGeneration(ctx, s.accountRepo, account); err != nil {
+			return nil, err
+		}
+		billingSettingsAppliedAtomically = true
+	}
 	updater := s.accountBillingRepo
 	if updater == nil {
 		// Unit tests and narrow internal callers may construct adminServiceImpl
@@ -845,7 +854,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		// AdminAccountRepository.
 		updater, _ = s.accountRepo.(AccountBillingSettingsRepository)
 	}
-	if updater != nil {
+	if updater != nil && !billingSettingsAppliedAtomically {
 		if err := updater.UpdateWithAccountBillingSettings(
 			ctx,
 			account,
@@ -1138,9 +1147,32 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		repoUpdates.Schedulable = input.Schedulable
 	}
 
-	// Run bulk update for column/jsonb fields first.
-	if _, err := s.accountRepo.BulkUpdate(ctx, input.AccountIDs, repoUpdates); err != nil {
-		return nil, err
+	// Kiro credentials and their generation must be committed in the same row
+	// update: a separate invalidation write could fail after credentials changed.
+	bulkIDs := make([]int64, 0, len(input.AccountIDs))
+	for _, accountID := range input.AccountIDs {
+		account := targetsByID[accountID]
+		if len(input.Credentials) == 0 || account == nil || account.Platform != PlatformKiro {
+			bulkIDs = append(bulkIDs, accountID)
+			continue
+		}
+		updated := *account
+		updated.Credentials = mergeMap(account.Credentials, input.Credentials)
+		updated.Extra = shallowCopyMap(account.Extra)
+		accountUpdates := repoUpdates
+		accountUpdates.BumpKiroCredentialGeneration = bumpKiroCredentialGenerationOnPrincipalChange(&updated, account.Credentials)
+		accountUpdates.Extra = shallowCopyMap(repoUpdates.Extra)
+		// The bulk JSONB patch must not overwrite server-managed catalog state.
+		delete(accountUpdates.Extra, kiroDetectedModelCatalogKey)
+		delete(accountUpdates.Extra, kiroCredentialGenerationKey)
+		if _, err := s.accountRepo.BulkUpdate(ctx, []int64{accountID}, accountUpdates); err != nil {
+			return nil, err
+		}
+	}
+	if len(bulkIDs) > 0 {
+		if _, err := s.accountRepo.BulkUpdate(ctx, bulkIDs, repoUpdates); err != nil {
+			return nil, err
+		}
 	}
 
 	// 将 proxy 变更传播到每个目标账号的 spark 影子账号

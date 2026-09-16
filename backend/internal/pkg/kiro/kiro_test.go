@@ -1,0 +1,426 @@
+package kiro
+
+import (
+	"bytes"
+	"encoding/binary"
+	"encoding/json"
+	"hash/crc32"
+	"io"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+var uuidV4RE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+func TestSocialRefreshURLUsesDesktopAuthHost(t *testing.T) {
+	require.Equal(t, "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken", SocialRefreshURL(""))
+	require.Equal(t, "https://prod.eu-central-1.auth.desktop.kiro.dev/refreshToken", SocialRefreshURL("eu-central-1"))
+}
+
+func TestBuildRequestConvertsHistoryToolsAndSanitizesSchema(t *testing.T) {
+	body := []byte(`{
+      "model":"public-alias",
+      "system":[{"type":"text","text":"system rules"}],
+      "messages":[
+        {"role":"user","content":"question"},
+        {"role":"assistant","content":[{"type":"text","text":"calling"},{"type":"tool_use","id":"tool_1","name":"lookup","input":{"q":"x"}}]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"result"}]}
+      ],
+      "tools":[{"name":"lookup","description":"Lookup","input_schema":{"type":"object","properties":{"q":{"type":"string","additionalProperties":false}},"required":[],"additionalProperties":false}}]
+    }`)
+
+	payload, tokens, err := BuildRequest(body, "claude-haiku-4.5", "arn:test", "")
+	require.NoError(t, err)
+	require.Positive(t, tokens)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(payload, &got))
+	require.Equal(t, "arn:test", got["profileArn"])
+	state := requireMap(t, got["conversationState"])
+	history := requireSlice(t, state["history"])
+	require.Len(t, history, 2)
+	first := requireMap(t, requireMap(t, history[0])["userInputMessage"])
+	require.Contains(t, first["content"], "system rules")
+	assistant := requireMap(t, requireMap(t, history[1])["assistantResponseMessage"])
+	require.Len(t, assistant["toolUses"], 1)
+	current := requireMap(t, requireMap(t, state["currentMessage"])["userInputMessage"])
+	require.Equal(t, "claude-haiku-4.5", current["modelId"])
+	ctx := requireMap(t, current["userInputMessageContext"])
+	require.Len(t, ctx["toolResults"], 1)
+	tools := requireSlice(t, ctx["tools"])
+	spec := requireMap(t, requireMap(t, tools[0])["toolSpecification"])
+	inputSchema := requireMap(t, spec["inputSchema"])
+	schema := requireMap(t, inputSchema["json"])
+	require.NotContains(t, schema, "required")
+	require.NotContains(t, schema, "additionalProperties")
+	require.Regexp(t, uuidV4RE, state["conversationId"])
+	require.Regexp(t, uuidV4RE, state["agentContinuationId"])
+}
+
+func TestBuildRequestInjectsThinkingPrefixAndHistoryThinking(t *testing.T) {
+	body := []byte(`{
+      "model":"claude-haiku-4.5",
+      "thinking":{"type":"enabled","budget_tokens":2048},
+      "system":"be careful",
+      "messages":[
+        {"role":"user","content":"q"},
+        {"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"ok"}]}
+      ]
+    }`)
+	built, err := BuildRequestResult(body, "claude-haiku-4.5", "arn:test", "")
+	require.NoError(t, err)
+	require.True(t, built.Thinking)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(built.Payload, &got))
+	history := requireSlice(t, requireMap(t, got["conversationState"])["history"])
+	first := requireMap(t, requireMap(t, history[0])["userInputMessage"])
+	require.Contains(t, first["content"], "<thinking_mode>enabled</thinking_mode><max_thinking_length>2048</max_thinking_length>")
+	require.Contains(t, first["content"], "be careful")
+	assistant := requireMap(t, requireMap(t, history[1])["assistantResponseMessage"])
+	require.Equal(t, "<thinking>plan</thinking>\n\nok", assistant["content"])
+}
+
+func TestBuildRequestInjectsThinkingPairWithoutSystem(t *testing.T) {
+	body := []byte(`{
+      "model":"claude-haiku-4.5",
+      "thinking":{"type":"adaptive"},
+      "messages":[{"role":"user","content":"hi"}]
+    }`)
+	built, err := BuildRequestResult(body, "claude-haiku-4.5", "arn:test", "")
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(built.Payload, &got))
+	history := requireSlice(t, requireMap(t, got["conversationState"])["history"])
+	require.GreaterOrEqual(t, len(history), 2)
+	user := requireMap(t, requireMap(t, history[0])["userInputMessage"])
+	require.Contains(t, user["content"], "<thinking_mode>adaptive</thinking_mode><thinking_effort>high</thinking_effort>")
+	assistant := requireMap(t, requireMap(t, history[1])["assistantResponseMessage"])
+	require.Equal(t, "I will follow these instructions.", assistant["content"])
+}
+
+func TestBuildRequestConvertsImagesAndKeepsTypedWebSearch(t *testing.T) {
+	body := []byte(`{
+      "model":"claude-haiku-4.5",
+      "messages":[{"role":"user","content":[
+        {"type":"text","text":"describe"},
+        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}},
+        {"type":"image","source":{"type":"base64","media_type":"image/svg+xml","data":"nope"}}
+      ]}],
+      "tools":[{"name":"web_search","type":"web_search_20250305","description":"Search"}]
+    }`)
+	built, err := BuildRequestResult(body, "claude-haiku-4.5", "arn:test", "")
+	require.NoError(t, err)
+	require.True(t, built.WebSearch)
+	require.Equal(t, "describe", built.SearchQuery)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(built.Payload, &got))
+	current := requireMap(t, requireMap(t, requireMap(t, got["conversationState"])["currentMessage"])["userInputMessage"])
+	images := requireSlice(t, current["images"])
+	require.Len(t, images, 1)
+	require.Equal(t, "png", requireMap(t, images[0])["format"])
+	require.Equal(t, map[string]any{"bytes": "abc"}, requireMap(t, images[0])["source"])
+	tools := requireSlice(t, requireMap(t, current["userInputMessageContext"])["tools"])
+	require.Equal(t, "web_search", requireMap(t, requireMap(t, tools[0])["toolSpecification"])["name"])
+}
+
+func TestBuildRequestTruncatesToolNamesAndFillsMissingResults(t *testing.T) {
+	longName := strings.Repeat("lookup", 20)
+	body, err := json.Marshal(map[string]any{
+		"model": "claude-haiku-4.5",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "q"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": "tool_1", "name": longName, "input": map[string]any{"q": "x"}},
+			}},
+			map[string]any{"role": "user", "content": "next"},
+		},
+		"tools": []any{map[string]any{"name": longName, "description": "Lookup"}},
+	})
+	require.NoError(t, err)
+	built, err := BuildRequestResult(body, "claude-haiku-4.5", "arn:test", "")
+	require.NoError(t, err)
+	require.Len(t, built.ToolNameMap, 1)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(built.Payload, &got))
+	state := requireMap(t, got["conversationState"])
+	history := requireSlice(t, state["history"])
+	assistant := requireMap(t, requireMap(t, history[1])["assistantResponseMessage"])
+	uses := requireSlice(t, assistant["toolUses"])
+	shortName, ok := requireMap(t, uses[0])["name"].(string)
+	require.True(t, ok)
+	require.Len(t, shortName, toolNameMaxLen)
+	require.Equal(t, longName, built.ToolNameMap[shortName])
+	current := requireMap(t, requireMap(t, state["currentMessage"])["userInputMessage"])
+	results := requireSlice(t, requireMap(t, current["userInputMessageContext"])["toolResults"])
+	require.Equal(t, "tool_1", requireMap(t, results[0])["toolUseId"])
+	require.Equal(t, placeholder, requireMap(t, requireSlice(t, requireMap(t, results[0])["content"])[0])["text"])
+}
+
+func TestConversationIDFromSeedIsStableAndFormatted(t *testing.T) {
+	first := conversationIDFromSeed("sess:1:conv-a")
+	second := conversationIDFromSeed("sess:1:conv-a")
+	other := conversationIDFromSeed("sess:1:conv-b")
+	require.Equal(t, first, second)
+	require.NotEqual(t, first, other)
+	require.Regexp(t, uuidV4RE, first)
+	require.Regexp(t, uuidV4RE, conversationIDFromSeed(""))
+	require.NotEqual(t, conversationIDFromSeed(""), conversationIDFromSeed(""))
+}
+
+func TestAgentContinuationIDFollowsConversation(t *testing.T) {
+	conversationID := conversationIDFromSeed("sess:9:stable")
+	first := agentContinuationIDFromConversation(conversationID)
+	second := agentContinuationIDFromConversation(conversationID)
+	require.Equal(t, first, second)
+	require.NotEqual(t, conversationID, first)
+	require.Regexp(t, uuidV4RE, first)
+}
+
+func TestBuildRequestSeedPinsConversationIDs(t *testing.T) {
+	body := []byte(`{"model":"claude-haiku-4.5","messages":[{"role":"user","content":"hi"}]}`)
+	first, _, err := BuildRequest(body, "claude-haiku-4.5", "arn:test", "sess:1:conv-a")
+	require.NoError(t, err)
+	second, _, err := BuildRequest(body, "claude-haiku-4.5", "arn:test", "sess:1:conv-a")
+	require.NoError(t, err)
+	other, _, err := BuildRequest(body, "claude-haiku-4.5", "arn:test", "sess:2:conv-a")
+	require.NoError(t, err)
+
+	var a, b, c map[string]any
+	require.NoError(t, json.Unmarshal(first, &a))
+	require.NoError(t, json.Unmarshal(second, &b))
+	require.NoError(t, json.Unmarshal(other, &c))
+	stateA := requireMap(t, a["conversationState"])
+	stateB := requireMap(t, b["conversationState"])
+	stateC := requireMap(t, c["conversationState"])
+	require.Equal(t, stateA["conversationId"], stateB["conversationId"])
+	require.Equal(t, stateA["agentContinuationId"], stateB["agentContinuationId"])
+	require.NotEqual(t, stateA["conversationId"], stateC["conversationId"])
+	require.Regexp(t, uuidV4RE, stateA["conversationId"])
+	require.Regexp(t, uuidV4RE, stateA["agentContinuationId"])
+}
+
+func TestTransformResponseTextAndToolEvents(t *testing.T) {
+	events := [][]byte{
+		[]byte(`{"content":"hello","modelId":"claude-haiku-4.5"}`),
+		[]byte(`{"name":"lookup","toolUseId":"tool_1","input":{}}`),
+		[]byte(`{"name":"lookup","toolUseId":"tool_1","input":"{\"q\":"}`),
+		[]byte(`{"name":"lookup","toolUseId":"tool_1","input":"\"x\"}"}`),
+		[]byte(`{"name":"lookup","toolUseId":"tool_1","input":{},"stop":true}`),
+		[]byte(`{"stopReason":"END_TURN"}`),
+	}
+	var source bytes.Buffer
+	for _, event := range events {
+		_, err := source.Write(encodeEvent(t, event))
+		require.NoError(t, err)
+	}
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&oneByteReader{r: bytes.NewReader(source.Bytes())}, &out, "claude-haiku-4.5", 12, true))
+
+	stream := out.String()
+	require.Contains(t, stream, `"type":"message_start"`)
+	require.Contains(t, stream, `"text":"hello","type":"text_delta"`)
+	require.Contains(t, stream, `"id":"tool_1","input":{},"name":"lookup","type":"tool_use"`)
+	require.Contains(t, stream, `"partial_json":"{\"q\":"`)
+	require.Contains(t, stream, `"partial_json":"\"x\"}"`)
+	require.Equal(t, 1, bytes.Count(out.Bytes(), []byte(`"type":"tool_use"`)))
+	require.Contains(t, stream, `"stop_reason":"tool_use"`)
+	require.Contains(t, stream, `event: message_stop`)
+}
+
+func TestTransformResponseBufferedAnthropicJSON(t *testing.T) {
+	var source bytes.Buffer
+	_, err := source.Write(encodeEvent(t, []byte(`{"content":"KIRO_OK"}`)))
+	require.NoError(t, err)
+	_, err = source.Write(encodeEvent(t, []byte(`{"stopReason":"END_TURN"}`)))
+	require.NoError(t, err)
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 4, false))
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
+	require.Equal(t, "claude-haiku-4.5", response["model"])
+	require.Equal(t, "end_turn", response["stop_reason"])
+	content := requireSlice(t, response["content"])
+	require.Equal(t, "KIRO_OK", requireMap(t, content[0])["text"])
+	require.Equal(t, float64(4), requireMap(t, response["usage"])["input_tokens"])
+}
+
+func TestDecodeEventStreamRejectsBadCRC(t *testing.T) {
+	frame := encodeEvent(t, []byte(`{"content":"x"}`))
+	frame[len(frame)-1] ^= 0xff
+	_, err := DecodeEventStream(bytes.NewReader(frame))
+	require.ErrorContains(t, err, "message CRC")
+}
+
+func TestTransformResponseRejectsTruncatedEvent(t *testing.T) {
+	frame := encodeEvent(t, []byte(`{"content":"x"}`))
+	var out bytes.Buffer
+	err := TransformResponse(bytes.NewReader(frame[:len(frame)-1]), &out, "claude-haiku-4.5", 1, false)
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+}
+
+func TestToolUseContributesToEstimatedOutputTokens(t *testing.T) {
+	var source bytes.Buffer
+	_, err := source.Write(encodeEvent(t, []byte(`{"name":"lookup","toolUseId":"tool_1","input":{}}`)))
+	require.NoError(t, err)
+	_, err = source.Write(encodeEvent(t, []byte(`{"input":"{\"q\":\"long tool argument\"}"}`)))
+	require.NoError(t, err)
+	_, err = source.Write(encodeEvent(t, []byte(`{"stopReason":"END_TURN"}`)))
+	require.NoError(t, err)
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 1, false))
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
+	require.Positive(t, requireMap(t, response["usage"])["output_tokens"])
+}
+
+func TestTransformResponseUsesUpstreamUsage(t *testing.T) {
+	events := [][]byte{
+		[]byte(`{"content":"hello"}`),
+		[]byte(`{"stopReason":"END_TURN","tokenUsage":{"uncachedInputTokens":21,"outputTokens":7,"cacheReadInputTokens":128,"cacheWriteInputTokens":32}}`),
+	}
+	var source bytes.Buffer
+	for _, event := range events {
+		_, err := source.Write(encodeEvent(t, event))
+		require.NoError(t, err)
+	}
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 4, false))
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
+	usage := requireMap(t, response["usage"])
+	require.Equal(t, float64(21), usage["input_tokens"])
+	require.Equal(t, float64(7), usage["output_tokens"])
+	require.Equal(t, float64(128), usage["cache_read_input_tokens"])
+	require.Equal(t, float64(32), usage["cache_creation_input_tokens"])
+}
+
+func TestTransformResponseReadsNestedMetadataUsage(t *testing.T) {
+	events := [][]byte{
+		[]byte(`{"content":"hello"}`),
+		[]byte(`{"stopReason":"END_TURN","metadata":{"tokenUsage":{"uncachedInputTokens":9,"outputTokens":3,"cacheReadInputTokens":64}}}`),
+	}
+	var source bytes.Buffer
+	for _, event := range events {
+		_, err := source.Write(encodeEvent(t, event))
+		require.NoError(t, err)
+	}
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 1, true))
+	require.Contains(t, out.String(), `"input_tokens":9`)
+	require.Contains(t, out.String(), `"output_tokens":3`)
+	require.Contains(t, out.String(), `"cache_read_input_tokens":64`)
+	require.NotContains(t, out.String(), `"cache_creation_input_tokens"`)
+}
+
+func TestTransformResponseSplitsThinkingBlocksAndRestoresToolName(t *testing.T) {
+	events := [][]byte{
+		[]byte(`{"content":"<thinking>\nplan"}`),
+		[]byte(`{"content":"</thinking>\n\nhello"}`),
+		[]byte(`{"name":"lookup_abcdef12","toolUseId":"tool_1","input":{}}`),
+		[]byte(`{"stopReason":"END_TURN"}`),
+	}
+	var source bytes.Buffer
+	for _, event := range events {
+		_, err := source.Write(encodeEvent(t, event))
+		require.NoError(t, err)
+	}
+	var out bytes.Buffer
+	require.NoError(t, TransformResponseWithOptions(&source, &out, TransformOptions{
+		Model: "claude-haiku-4.5", InputTokens: 4, Stream: true,
+		ToolNameMap: map[string]string{"lookup_abcdef12": "lookup-original"},
+	}))
+	stream := out.String()
+	require.Contains(t, stream, `"type":"thinking"`)
+	require.Contains(t, stream, `"type":"thinking_delta"`)
+	require.Contains(t, stream, `"thinking":"plan"`)
+	require.Contains(t, stream, `"text":"hello"`)
+	require.Contains(t, stream, `"name":"lookup-original"`)
+}
+
+func TestTransformResponseBufferedThinkingJSON(t *testing.T) {
+	var source bytes.Buffer
+	_, err := source.Write(encodeEvent(t, []byte(`{"content":"<thinking>\nsecret</thinking>\n\nvisible"}`)))
+	require.NoError(t, err)
+	_, err = source.Write(encodeEvent(t, []byte(`{"stopReason":"END_TURN"}`)))
+	require.NoError(t, err)
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 3, false))
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
+	content := requireSlice(t, response["content"])
+	require.Equal(t, "thinking", requireMap(t, content[0])["type"])
+	require.Equal(t, "secret", requireMap(t, content[0])["thinking"])
+	require.Equal(t, "visible", requireMap(t, content[1])["text"])
+}
+
+func TestTransformResponseIgnoresNegativeUsage(t *testing.T) {
+	events := [][]byte{
+		[]byte(`{"content":"hello world"}`),
+		[]byte(`{"stopReason":"END_TURN","tokenUsage":{"uncachedInputTokens":-1,"outputTokens":-8}}`),
+	}
+	var source bytes.Buffer
+	for _, event := range events {
+		_, err := source.Write(encodeEvent(t, event))
+		require.NoError(t, err)
+	}
+	var out bytes.Buffer
+	require.NoError(t, TransformResponse(&source, &out, "claude-haiku-4.5", 11, false))
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &response))
+	usage := requireMap(t, response["usage"])
+	require.Equal(t, float64(11), usage["input_tokens"])
+	require.Positive(t, usage["output_tokens"])
+}
+
+func requireMap(t *testing.T, value any) map[string]any {
+	t.Helper()
+	result, ok := value.(map[string]any)
+	require.True(t, ok)
+	return result
+}
+
+func requireSlice(t *testing.T, value any) []any {
+	t.Helper()
+	result, ok := value.([]any)
+	require.True(t, ok)
+	return result
+}
+
+type oneByteReader struct{ r io.Reader }
+
+func (r *oneByteReader) Read(p []byte) (int, error) {
+	if len(p) > 1 {
+		p = p[:1]
+	}
+	return r.r.Read(p)
+}
+
+func encodeEvent(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	headers := encodeHeader(":message-type", "event")
+	headers = append(headers, encodeHeader(":event-type", "assistantResponseEvent")...)
+	total := 12 + len(headers) + len(payload) + 4
+	frame := make([]byte, total)
+	binary.BigEndian.PutUint32(frame[:4], uint32(total))
+	binary.BigEndian.PutUint32(frame[4:8], uint32(len(headers)))
+	binary.BigEndian.PutUint32(frame[8:12], crc32.ChecksumIEEE(frame[:8]))
+	copy(frame[12:], headers)
+	copy(frame[12+len(headers):], payload)
+	binary.BigEndian.PutUint32(frame[total-4:], crc32.ChecksumIEEE(frame[:total-4]))
+	return frame
+}
+
+func encodeHeader(name, value string) []byte {
+	result := []byte{byte(len(name))}
+	result = append(result, name...)
+	result = append(result, 7, 0, 0)
+	binary.BigEndian.PutUint16(result[len(result)-2:], uint16(len(value)))
+	return append(result, value...)
+}

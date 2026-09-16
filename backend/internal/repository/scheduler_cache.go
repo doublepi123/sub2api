@@ -956,7 +956,11 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	}
 	// Candidate-list admission evaluates the account override before hydrating
 	// the full account. Dropping it silently falls back to the platform threshold.
-	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold"}
+	keys := []string{
+		"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold",
+		// Kiro catalog scope is checked before the selected account is hydrated.
+		"region", "profile_arn", "auth_method", "client_id", "base_url",
+	}
 	filtered := make(map[string]any)
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {
@@ -974,6 +978,15 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		return nil
 	}
 	keys := []string{
+		// Keep the catalog and its scope generation together for candidate admission.
+		"detected_model_catalog",
+		"kiro_credential_generation",
+		"kiro_model_catalog_mode",
+		"kiro_sched_reset_at",
+		"kiro_sched_tier",
+		"kiro_sched_tier_updated_at",
+		"kiro_sched_usage_updated_at",
+		"kiro_sched_utilization",
 		// Anthropic shared-window and Fable-only threshold checks run on this
 		// projection. UpdateExtra refreshes both payloads without a bucket rebuild.
 		"session_window_utilization",

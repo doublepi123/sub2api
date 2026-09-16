@@ -285,7 +285,7 @@ func TestRateLimitService_ModelTempUnschedulableIsolatesSchedulerByModel(t *test
 	require.True(t, handled)
 	require.Len(t, repo.modelRateLimitCalls, 1)
 	call := repo.modelRateLimitCalls[0]
-	require.Equal(t, "upstream-a", call.scope, "canonical upstream model must not be mapped a second time")
+	require.Equal(t, "upstream-a", call.scope, "already-mapped caller key must be used directly")
 
 	account.Extra = map[string]any{
 		modelRateLimitsKey: map[string]any{

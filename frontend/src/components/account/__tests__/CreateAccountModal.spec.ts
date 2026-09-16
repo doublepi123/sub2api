@@ -711,4 +711,58 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
   })
+
+  it('creates a Kiro Builder ID account with refresh credentials', async () => {
+    createAccountMock.mockResolvedValueOnce({ id: 77, platform: 'kiro', type: 'oauth' })
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kiro')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro Builder ID')
+    await wrapper.get('[data-testid="kiro-refresh-token"]').setValue('refresh-value')
+    await wrapper.get('[data-testid="kiro-client-id"]').setValue('client-value')
+    await wrapper.get('[data-testid="kiro-client-secret"]').setValue('secret-value')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({
+      name: 'Kiro Builder ID',
+      platform: 'kiro',
+      type: 'oauth',
+      credentials: {
+        auth_method: 'idc',
+        refresh_token: 'refresh-value',
+        client_id: 'client-value',
+        client_secret: 'secret-value',
+        region: 'us-east-1'
+      }
+    })
+  })
+
+  it('creates a Kiro Google social account with only refresh token', async () => {
+    createAccountMock.mockResolvedValueOnce({ id: 78, platform: 'kiro', type: 'oauth' })
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kiro')
+    await wrapper.get('[data-testid="kiro-auth-method-social"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro Google Account')
+    await wrapper.get('[data-testid="kiro-refresh-token"]').setValue('social-refresh-token')
+    await wrapper.get('[data-testid="kiro-profile-arn"]').setValue('')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload).toMatchObject({
+      name: 'Kiro Google Account',
+      platform: 'kiro',
+      type: 'oauth',
+      credentials: {
+        auth_method: 'social',
+        refresh_token: 'social-refresh-token',
+        region: 'us-east-1'
+      }
+    })
+    expect(payload.credentials).not.toHaveProperty('client_id')
+    expect(payload.credentials).not.toHaveProperty('client_secret')
+    expect(payload.credentials).not.toHaveProperty('profile_arn')
+  })
 })

@@ -151,6 +151,7 @@ type AdminAccountRepository interface {
 	AccountRepository
 	AccountDuplicateRepository
 	AccountBillingSettingsRepository
+	KiroCredentialGenerationRepository
 }
 
 // AccountBulkUpdate describes the fields that can be updated in a bulk operation.
@@ -169,7 +170,8 @@ type AccountBulkUpdate struct {
 	ProbeEnabled   *bool
 	// EnsureCodexFingerprintSeed asks the repository to atomically preserve an
 	// existing valid Codex fingerprint seed or create one for eligible rows.
-	EnsureCodexFingerprintSeed bool
+	EnsureCodexFingerprintSeed   bool
+	BumpKiroCredentialGeneration bool
 }
 
 // CreateAccountRequest 创建账号请求
@@ -261,7 +263,7 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 			if err != nil {
 				return nil, err
 			}
-			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini || g.Platform == PlatformGrok) {
+			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini || g.Platform == PlatformKiro || g.Platform == PlatformGrok) {
 				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", g.Name)
 			}
 		}
@@ -328,6 +330,7 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 		account.Notes = normalizeAccountNotes(req.Notes)
 	}
 
+	previousCredentials := shallowCopyMap(account.Credentials)
 	if req.Credentials != nil {
 		account.Credentials = SanitizeStoredCredentials(account.Platform, *req.Credentials)
 	}
@@ -340,6 +343,11 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 		delete(extra, OllamaCloudUsageSessionExtraKey)
 		delete(extra, OllamaCloudUsageAutoRefreshExtraKey)
 		delete(extra, OllamaCloudUsageSnapshotExtraKey)
+		for _, key := range []string{kiroDetectedModelCatalogKey, kiroCredentialGenerationKey} {
+			if value, ok := account.Extra[key]; ok {
+				extra[key] = value
+			}
+		}
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, extra)
 	} else {
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, account.Extra)
@@ -375,7 +383,12 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 	}
 
 	// 执行更新
-	if err := s.accountRepo.Update(ctx, account); err != nil {
+	if bumpKiroCredentialGenerationOnPrincipalChange(account, previousCredentials) {
+		err = updateWithKiroCredentialGeneration(ctx, s.accountRepo, account)
+	} else {
+		err = s.accountRepo.Update(ctx, account)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("update account: %w", err)
 	}
 
@@ -386,7 +399,7 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 			if err != nil {
 				return nil, err
 			}
-			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini || g.Platform == PlatformGrok) {
+			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini || g.Platform == PlatformKiro || g.Platform == PlatformGrok) {
 				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", g.Name)
 			}
 		}
@@ -511,6 +524,9 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 		return nil
 	case PlatformGemini:
 		// TODO: 测试Gemini API凭证
+		return nil
+	case PlatformKiro:
+		// Kiro credentials are validated by token refresh and request-path probes.
 		return nil
 	case PlatformGrok:
 		// Grok OAuth credentials are validated via token exchange/refresh and request-path probes.

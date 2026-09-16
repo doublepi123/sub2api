@@ -24,6 +24,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -65,6 +66,7 @@ type AccountHandler struct {
 	grokImportProber        grokImportProber
 	upstreamBillingProbe    *service.UpstreamBillingProbeService
 	ollamaCloudUsage        *service.OllamaCloudUsageService
+	kiroTokenRefresher      *service.KiroTokenRefresher
 	cfg                     *config.Config
 }
 
@@ -75,6 +77,12 @@ func (h *AccountHandler) SetUpstreamBillingProbeService(probe *service.UpstreamB
 
 func (h *AccountHandler) SetOllamaCloudUsageService(usage *service.OllamaCloudUsageService) {
 	h.ollamaCloudUsage = usage
+}
+
+func (h *AccountHandler) SetKiroTokenRefresher(refresher *service.KiroTokenRefresher) {
+	if h != nil {
+		h.kiroTokenRefresher = refresher
+	}
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -1473,6 +1481,15 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 		if baseURL := strings.TrimSpace(account.GetCredential("base_url")); baseURL != "" {
 			newCredentials["base_url"] = baseURL
 		}
+	} else if account.Platform == service.PlatformKiro {
+		if h.kiroTokenRefresher == nil {
+			return nil, "", fmt.Errorf("kiro token refresher is not configured")
+		}
+		refreshed, err := h.kiroTokenRefresher.Refresh(ctx, account)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to refresh Kiro credentials: %w", err)
+		}
+		newCredentials = refreshed
 	} else {
 		// Use Anthropic/Claude OAuth service to refresh token
 		tokenInfo, err := h.oauthService.RefreshAccountToken(ctx, account)
@@ -2873,6 +2890,15 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	if account.Platform == service.PlatformAntigravity {
 		// 直接复用 antigravity.DefaultModels()，与 /v1/models 端点保持同步
 		response.Success(c, antigravity.DefaultModels())
+		return
+	}
+
+	if account.Platform == service.PlatformKiro {
+		models := make([]claude.Model, 0, len(kiro.Models))
+		for _, id := range kiro.Models {
+			models = append(models, claude.Model{ID: id, Type: "model", DisplayName: id, CreatedAt: "2024-01-01T00:00:00Z"})
+		}
+		response.Success(c, models)
 		return
 	}
 

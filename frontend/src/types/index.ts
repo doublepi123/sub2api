@@ -538,7 +538,7 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'composite'
+export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'kiro' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'composite'
 
 export type VideoModelPrices = Record<string, Record<string, number>>
 
@@ -918,7 +918,7 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go'
+export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'kiro' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
@@ -1169,7 +1169,7 @@ export interface Account {
   credentials_status?: Record<string, boolean>
   ollama_cloud_usage?: OllamaCloudUsageState
   // Extra fields including Codex usage, OpenAI compact capability, and model-level rate limits.
-  extra?: (CodexUsageSnapshot & OpenAICompactState & {
+  extra?: (CodexUsageSnapshot & OpenAICompactState & KiroTierState & {
     model_rate_limits?: Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>
     antigravity_credits_overages?: Record<string, { activated_at: string; active_until: string }>
     upstream_billing_probe_enabled?: boolean
@@ -1375,6 +1375,19 @@ export interface GrokBillingSummary {
   failed_windows?: string[]
 }
 
+export interface KiroSubscriptionQuota {
+  subscription_type?: string
+  subscription_title?: string
+  resource_type?: string
+  unit?: string
+  current_usage: number
+  usage_limit: number
+  remaining: number
+  usage_percent: number
+  overage_usage?: number
+  next_reset_at?: string | null
+}
+
 export interface AccountUsageInfo {
   source?: 'passive' | 'active'
   updated_at: string | null
@@ -1411,6 +1424,7 @@ export interface AccountUsageInfo {
     amount?: number
     minimum_balance?: number
   }> | null
+  kiro_subscription?: KiroSubscriptionQuota | null
   // Antigravity 403 forbidden 状态
   is_forbidden?: boolean
   forbidden_reason?: string
@@ -1468,6 +1482,44 @@ export interface OpenAICompactState {
 export interface OpenAIResponsesState {
   openai_responses_mode?: OpenAIResponsesMode
   openai_responses_supported?: boolean
+}
+
+export type KiroSchedTier = 'free' | 'paid'
+
+export type KiroModelCatalogState = 'unknown' | 'ready' | 'expired'
+
+export type KiroModelCatalogErrorCode =
+  | ''
+  | 'http_401'
+  | 'http_429'
+  | 'http_5xx'
+  | 'decode'
+  | 'missing_models_field'
+  | 'pagination_incomplete'
+  | 'pagination_limit'
+  | 'timeout'
+  | 'network'
+
+export interface KiroModelCatalog {
+  schema_version: number
+  source: string
+  state: KiroModelCatalogState
+  model_ids: string[]
+  scope_fingerprint: string
+  last_success_at: string
+  last_attempt_at: string
+  last_error_code: KiroModelCatalogErrorCode
+}
+
+// '' 是显式的「跟随全局」哨兵：后端用 JSONB `||` 合并 extra，省略键不会删除旧值，
+// 因此回到平台默认必须落键写 ''，不能 omit / null。
+export type KiroModelCatalogMode = '' | 'off' | 'shadow' | 'enforce'
+
+export interface KiroTierState {
+  kiro_sched_tier?: KiroSchedTier
+  kiro_sched_tier_updated_at?: string
+  kiro_model_catalog_mode?: KiroModelCatalogMode
+  detected_model_catalog?: KiroModelCatalog
 }
 
 export interface CreateAccountRequest {

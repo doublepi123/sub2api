@@ -150,6 +150,100 @@ const cyberSessionBlockRuntimeCacheTTL = 60 * time.Second
 const cyberSessionBlockRuntimeErrorTTL = 5 * time.Second
 const cyberSessionBlockRuntimeDBTimeout = 5 * time.Second
 
+// cachedKiroModelCatalogRuntime Kiro 模型目录门控运行时配置进程内缓存（60s TTL）。
+// GetKiroModelCatalogRuntime 在调度热路径上被调用，避免每次访问 DB。
+type cachedKiroModelCatalogRuntime struct {
+	runtime KiroModelCatalogRuntime
+	// knownGood 标记该值来自一次成功的 settings 读取（含两键均缺席的"配置为默认值"）。
+	// DB 读取失败时只允许保留 knownGood 的值，绝不把瞬时故障降级成 fallback。
+	knownGood bool
+	expiresAt int64 // unix nano
+}
+
+const kiroModelCatalogRuntimeCacheTTL = 60 * time.Second
+const kiroModelCatalogRuntimeErrorTTL = 5 * time.Second
+const kiroModelCatalogRuntimeDBTimeout = 5 * time.Second
+
+// kiroModelCatalogRuntimeFallback 缺省姿态：仅在从未成功读取过配置（首次启动或键缺席的
+// 语义默认值）时使用；读取失败但存在 knownGood 缓存时保留最后已知值，不回退到这里。
+// 必须是 shadow 而非 enforce（首次启动的 DB 抖动不应拒绝流量），也不能是 off（不应静默关闭门控）。
+var kiroModelCatalogRuntimeFallback = KiroModelCatalogRuntime{Mode: kiroCatalogModeShadow, EmergencyOff: false}
+
+// GetKiroModelCatalogRuntime 返回 Kiro 模型目录门控的平台级配置，进程内缓存 ~60s，
+// 供调度热路径读取时避免 DB 往返。两个 setting key 在单次 singleflight 里用一次
+// GetMultiple 读取；缺失键（GetMultiple 对不存在的键不报错，直接缺席，等价于
+// ErrSettingNotFound）按文档默认值 shadow/false 处理。
+// 默认值：模式 shadow，紧急关闭 false。nil service / nil repo 安全（调度器单测以
+// nil settingService 构造 GatewayService）。
+func (s *SettingService) GetKiroModelCatalogRuntime(ctx context.Context) KiroModelCatalogRuntime {
+	if s == nil || s.settingRepo == nil {
+		return kiroModelCatalogRuntimeFallback
+	}
+	if cached, ok := s.kiroModelCatalogRuntimeCache.Load().(*cachedKiroModelCatalogRuntime); ok && cached != nil {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.runtime
+		}
+	}
+	result, _, _ := s.kiroModelCatalogRuntimeSF.Do("kiro_model_catalog_runtime", func() (any, error) {
+		if cached, ok := s.kiroModelCatalogRuntimeCache.Load().(*cachedKiroModelCatalogRuntime); ok && cached != nil {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached, nil
+			}
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), kiroModelCatalogRuntimeDBTimeout)
+		defer cancel()
+
+		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+			SettingKeyKiroModelCatalogEnforcementMode,
+			SettingKeyKiroModelCatalogEmergencyOff,
+		})
+		if err != nil {
+			// 读取失败 ≠ 未配置：只要存在 knownGood 条目（即便已过期）就保留最后已知
+			// 策略，仅续一个短 errorTTL 以便 DB 恢复后快速收敛。关闭 enforce 必须是
+			// 运维的显式决策，绝不能是 DB 抖动的副作用。
+			if cached, ok := s.kiroModelCatalogRuntimeCache.Load().(*cachedKiroModelCatalogRuntime); ok && cached != nil && cached.knownGood {
+				slog.Warn("kiro model catalog runtime settings read failed; keeping last known-good", "mode", cached.runtime.Mode, "error", err)
+				entry := &cachedKiroModelCatalogRuntime{
+					runtime:   cached.runtime,
+					knownGood: true,
+					expiresAt: time.Now().Add(kiroModelCatalogRuntimeErrorTTL).UnixNano(),
+				}
+				s.kiroModelCatalogRuntimeCache.Store(entry)
+				return entry, nil
+			}
+			slog.Warn("failed to get kiro model catalog runtime settings", "error", err)
+			entry := &cachedKiroModelCatalogRuntime{
+				runtime:   kiroModelCatalogRuntimeFallback,
+				knownGood: false,
+				expiresAt: time.Now().Add(kiroModelCatalogRuntimeErrorTTL).UnixNano(),
+			}
+			s.kiroModelCatalogRuntimeCache.Store(entry)
+			return entry, nil
+		}
+
+		rt := kiroModelCatalogRuntimeFallback
+		if mode, ok := parseKiroCatalogMode(values[SettingKeyKiroModelCatalogEnforcementMode]); ok {
+			rt.Mode = mode
+		}
+		rt.EmergencyOff = strings.TrimSpace(values[SettingKeyKiroModelCatalogEmergencyOff]) == "true"
+
+		entry := &cachedKiroModelCatalogRuntime{
+			runtime:   rt,
+			knownGood: true,
+			expiresAt: time.Now().Add(kiroModelCatalogRuntimeCacheTTL).UnixNano(),
+		}
+		s.kiroModelCatalogRuntimeCache.Store(entry)
+		return entry, nil
+	})
+	if entry, ok := result.(*cachedKiroModelCatalogRuntime); ok && entry != nil {
+		return entry.runtime
+	}
+	return kiroModelCatalogRuntimeFallback
+}
+
 const openAIQuotaAutoPauseSettingsCacheTTL = 60 * time.Second
 const openAIQuotaAutoPauseSettingsErrorTTL = 5 * time.Second
 const openAIQuotaAutoPauseSettingsDBTimeout = 5 * time.Second

@@ -660,23 +660,21 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 				"gemini-3-flash",
 				"gemini-3.1-pro-high",
 				"gemini-3.1-pro-low",
-				"gemini-3.6-flash",
 				"gemini-3.6-flash-high",
 				"gemini-3.6-flash-low",
 				"gemini-3.6-flash-medium",
 				"gemini-3.6-flash-tiered",
-				"gemini-3.7-flash",
 				"gemini-3.7-flash-high",
 				"gemini-3.7-flash-low",
 				"gemini-3.7-flash-medium",
 				"gemini-3.7-flash-tiered",
-				"gemini-3.8-flash",
 				"gemini-3.8-flash-high",
 				"gemini-3.8-flash-low",
 				"gemini-3.8-flash-medium",
 				"gemini-3.8-flash-tiered",
 			})
 			applyAntigravityGemini31ProAliases(result)
+			applyAntigravityGeminiFlashTierAliases(result)
 		}
 		return result
 	}
@@ -789,6 +787,28 @@ func applyAntigravityGemini31ProAliases(mapping map[string]string) {
 			continue
 		}
 		mapping[alias.model] = target
+	}
+}
+
+// applyAntigravityGeminiFlashTierAliases upgrades legacy bare self-mappings
+// to concrete upstream IDs. The native Antigravity app resolves its model
+// placeholders to -low/-medium/-high IDs; the bare 3.6/3.7/3.8 IDs are not
+// advertised by fetchAvailableModels and return upstream 404s.
+func applyAntigravityGeminiFlashTierAliases(mapping map[string]string) {
+	aliases := []struct {
+		model  string
+		target string
+	}{
+		{model: "gemini-3.6-flash", target: domain.AntigravityGemini36FlashDefaultModel},
+		{model: "gemini-3.7-flash", target: domain.AntigravityGemini37FlashDefaultModel},
+		{model: "gemini-3.8-flash", target: domain.AntigravityGemini38FlashDefaultModel},
+	}
+
+	for _, alias := range aliases {
+		current := strings.TrimSpace(mapping[alias.model])
+		if current == "" || current == alias.model {
+			mapping[alias.model] = alias.target
+		}
 	}
 }
 

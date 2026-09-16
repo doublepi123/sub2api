@@ -564,6 +564,98 @@
       </div>
     </template>
 
+    <!-- Kiro OAuth accounts: official subscription credits from GetUsageLimits -->
+    <template v-else-if="account.platform === 'kiro' && account.type === 'oauth'">
+      <div class="mb-1 flex flex-wrap items-center gap-1">
+        <span
+          v-if="kiroPlanLabel"
+          :class="[
+            'inline-block rounded px-1.5 py-0.5 text-[10px] font-medium',
+            kiroPlanClass
+          ]"
+        >
+          {{ kiroPlanLabel }}
+        </span>
+        <span
+          data-testid="kiro-effective-tier-badge"
+          :title="kiroEffectiveTierTitle"
+          :class="[
+            'inline-block rounded px-1.5 py-0.5 text-[10px] font-medium',
+            kiroEffectiveTierClass
+          ]"
+        >
+          {{ kiroEffectiveTierLabel }}
+        </span>
+        <span
+          data-testid="kiro-model-catalog-badge"
+          :title="kiroCatalogTitle"
+          :class="[
+            'inline-block rounded px-1.5 py-0.5 text-[10px] font-medium',
+            kiroCatalogClass
+          ]"
+        >
+          {{ kiroCatalogLabel }}
+        </span>
+      </div>
+
+      <div v-if="loading" class="space-y-1.5">
+        <div class="flex items-center gap-1">
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+      </div>
+      <div v-else-if="needsReauth" class="space-y-1">
+        <span class="inline-block rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-medium text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">
+          {{ t('admin.accounts.needsReauth') }}
+        </span>
+      </div>
+      <div v-else-if="isForbidden" class="space-y-1">
+        <span class="inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-900/40 dark:text-red-300">
+          {{ t('admin.accounts.forbidden') }}
+        </span>
+      </div>
+      <div v-else-if="usageInfo?.error" class="text-xs text-amber-600 dark:text-amber-400">
+        {{ usageErrorLabel }}
+      </div>
+      <div v-else-if="kiroQuota" class="space-y-1">
+        <UsageProgressBar
+          :label="t('admin.accounts.usageWindow.kiroCredits')"
+          :utilization="kiroQuota.usage_percent"
+          :resets-at="kiroQuota.next_reset_at || null"
+          color="indigo"
+        />
+        <div class="text-[10px] text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.usageWindow.kiroUsed') }} {{ formatKiroCredits(kiroQuota.current_usage) }} / {{ formatKiroCredits(kiroQuota.usage_limit) }}
+          · {{ t('admin.accounts.usageWindow.kiroRemaining') }} {{ formatKiroCredits(kiroQuota.remaining) }}
+        </div>
+        <div v-if="kiroQuota.overage_usage && kiroQuota.overage_usage > 0" class="text-[10px] text-amber-600 dark:text-amber-400">
+          {{ t('admin.accounts.usageWindow.kiroOverage') }} {{ formatKiroCredits(kiroQuota.overage_usage) }}
+        </div>
+      </div>
+      <div v-else class="text-xs text-gray-400">
+        {{ t('admin.accounts.usageWindow.kiroNoQuota') }}
+      </div>
+
+      <button
+        type="button"
+        class="mt-0.5 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-medium text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
+        :disabled="activeQueryLoading"
+        @click="loadActiveUsage"
+      >
+        <svg
+          class="h-2.5 w-2.5"
+          :class="{ 'animate-spin': activeQueryLoading }"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        {{ t('admin.accounts.usageWindow.activeQuery') }}
+      </button>
+    </template>
+
     <!-- Other accounts: no usage window -->
     <template v-else>
       <div class="text-xs text-gray-400">-</div>
@@ -650,7 +742,15 @@
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
+import type {
+  Account,
+  AccountUsageInfo,
+  GeminiCredentials,
+  KiroModelCatalog,
+  KiroModelCatalogState,
+  KiroSchedTier,
+  WindowStats
+} from '@/types'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
@@ -745,6 +845,9 @@ const shouldFetchUsage = computed(() => {
     return true
   }
   if (props.account.platform === 'antigravity') {
+    return props.account.type === 'oauth'
+  }
+  if (props.account.platform === 'kiro') {
     return props.account.type === 'oauth'
   }
   if (props.account.platform === 'grok') {
@@ -1140,6 +1243,109 @@ const geminiUsageBars = computed(() => {
 
   return bars
 })
+
+const kiroQuota = computed(() => usageInfo.value?.kiro_subscription || null)
+
+const kiroPlanLabel = computed(() => {
+  const quota = kiroQuota.value
+  if (!quota) return null
+  return quota.subscription_title?.trim() || quota.subscription_type?.trim() || null
+})
+
+const kiroPlanClass = computed(() => {
+  const plan = `${kiroQuota.value?.subscription_title || ''} ${kiroQuota.value?.subscription_type || ''}`.toUpperCase()
+  if (plan.includes('POWER')) {
+    return 'bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-300'
+  }
+  if (plan.includes('PRO')) {
+    return 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300'
+  }
+  return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+})
+
+const kiroEffectiveTier = computed<KiroSchedTier | ''>(() => {
+  const extra = props.account.extra
+  if (extra?.kiro_sched_tier === 'free' || extra?.kiro_sched_tier === 'paid') {
+    return extra.kiro_sched_tier
+  }
+  return ''
+})
+
+const KIRO_TIER_LABEL_KEYS: Record<KiroSchedTier | '', string> = {
+  free: 'admin.accounts.usageWindow.kiroTierFree',
+  paid: 'admin.accounts.usageWindow.kiroTierPaid',
+  '': 'admin.accounts.usageWindow.kiroTierUnknown'
+}
+
+const KIRO_TIER_CLASSES: Record<KiroSchedTier | '', string> = {
+  paid: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+  free: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  '': 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+}
+
+const kiroEffectiveTierLabel = computed(() => t(KIRO_TIER_LABEL_KEYS[kiroEffectiveTier.value]))
+
+const kiroEffectiveTierClass = computed(() => KIRO_TIER_CLASSES[kiroEffectiveTier.value])
+
+const kiroEffectiveTierTitle = computed(
+  () => `${t('admin.accounts.usageWindow.kiroTier')}: ${kiroEffectiveTierLabel.value}`
+)
+
+const kiroModelCatalog = computed<KiroModelCatalog | null>(() => props.account.extra?.detected_model_catalog ?? null)
+
+const KIRO_CATALOG_STATE_LABEL_KEYS: Record<KiroModelCatalogState, string> = {
+  ready: 'admin.accounts.usageWindow.kiroCatalogReady',
+  unknown: 'admin.accounts.usageWindow.kiroCatalogUnknown',
+  expired: 'admin.accounts.usageWindow.kiroCatalogExpired'
+}
+
+const KIRO_CATALOG_STATE_CLASSES: Record<KiroModelCatalogState, string> = {
+  ready: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+  unknown: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+  expired: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+}
+
+const kiroCatalogState = computed<KiroModelCatalogState>(() => {
+  const state = kiroModelCatalog.value?.state
+  return state === 'ready' || state === 'expired' ? state : 'unknown'
+})
+
+const kiroCatalogClass = computed(() => KIRO_CATALOG_STATE_CLASSES[kiroCatalogState.value])
+
+const kiroCatalogAge = computed(() => {
+  const lastSuccessAt = kiroModelCatalog.value?.last_success_at
+  if (!lastSuccessAt) return ''
+  const elapsedMs = Date.now() - new Date(lastSuccessAt).getTime()
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return ''
+  const hours = Math.floor(elapsedMs / 3_600_000)
+  if (hours < 1) return `${Math.max(1, Math.floor(elapsedMs / 60_000))}m`
+  if (hours < 48) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+})
+
+const kiroCatalogLabel = computed(() => {
+  const stateLabel = t(KIRO_CATALOG_STATE_LABEL_KEYS[kiroCatalogState.value])
+  const catalog = kiroModelCatalog.value
+  if (!catalog) return stateLabel
+  const segments = [`${catalog.model_ids.length} ${t('admin.accounts.usageWindow.kiroCatalogModels')}`, stateLabel]
+  if (kiroCatalogAge.value) segments.push(kiroCatalogAge.value)
+  return segments.join(' · ')
+})
+
+const kiroCatalogTitle = computed(() => {
+  const catalog = kiroModelCatalog.value
+  const lines = [`${t('admin.accounts.usageWindow.kiroCatalog')}: ${kiroCatalogLabel.value}`]
+  if (kiroCatalogAge.value) {
+    lines.push(t('admin.accounts.usageWindow.kiroCatalogAge', { age: kiroCatalogAge.value }))
+  }
+  if (catalog && catalog.model_ids.length > 0) lines.push(...catalog.model_ids)
+  return lines.join('\n')
+})
+
+const formatKiroCredits = (value: number) => {
+  if (!Number.isFinite(value)) return '0'
+  return value.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
+}
 
 interface GrokQuotaBarInfo {
   utilization: number

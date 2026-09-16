@@ -501,6 +501,7 @@ export default {
       openai: 'OpenAI',
       anthropic: 'Anthropic',
       gemini: 'Gemini',
+      kiro: 'Kiro',
       grok: 'Grok',
       antigravity: 'Antigravity',
       kimi: 'Kimi',

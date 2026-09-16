@@ -211,6 +211,8 @@ func ProvideAccountHandler(
 	rpmCache service.RPMCache,
 	tokenCacheInvalidator service.TokenCacheInvalidator,
 	grokQuotaService *service.GrokQuotaService,
+	httpUpstream service.HTTPUpstream,
+	tlsFPProfileService *service.TLSFingerprintProfileService,
 ) *AccountHandler {
 	handler := NewAccountHandler(
 		adminService,
@@ -229,6 +231,7 @@ func ProvideAccountHandler(
 		tokenCacheInvalidator,
 	)
 	handler.grokImportProber = grokQuotaService
+	handler.SetKiroTokenRefresher(service.NewKiroTokenRefresher(httpUpstream, tlsFPProfileService))
 	handler.cfg = cfg
 	return handler
 }

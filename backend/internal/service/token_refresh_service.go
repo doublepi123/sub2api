@@ -55,16 +55,18 @@ type GrokOAuthRefreshMutationRepository interface {
 // TokenRefreshService OAuth token自动刷新服务
 // 定期检查并刷新即将过期的token
 type TokenRefreshService struct {
-	accountRepo      AccountRepository
-	candidatePager   OAuthRefreshCandidatePager
-	registrations    []tokenRefreshRegistration
-	refreshPolicy    BackgroundRefreshPolicy
-	cfg              *config.TokenRefreshConfig
-	cacheInvalidator TokenCacheInvalidator
-	schedulerCache   SchedulerCache   // 用于同步更新调度器缓存，解决 token 刷新后缓存不一致问题
-	tempUnschedCache TempUnschedCache // 用于清除 Redis 中的临时不可调度缓存
-	refreshAPI       *OAuthRefreshAPI // 统一刷新 API
-	runtimeBlocker   AccountRuntimeBlocker
+	accountRepo               AccountRepository
+	candidatePager            OAuthRefreshCandidatePager
+	registrations             []tokenRefreshRegistration
+	refreshPolicy             BackgroundRefreshPolicy
+	cfg                       *config.TokenRefreshConfig
+	cacheInvalidator          TokenCacheInvalidator
+	schedulerCache            SchedulerCache   // 用于同步更新调度器缓存，解决 token 刷新后缓存不一致问题
+	tempUnschedCache          TempUnschedCache // 用于清除 Redis 中的临时不可调度缓存
+	refreshAPI                *OAuthRefreshAPI // 统一刷新 API
+	runtimeBlocker            AccountRuntimeBlocker
+	kiroModelCatalogRefresher *KiroModelCatalogRefresher
+	leaderLease               LeaderLease // 跨副本领导者租约（默认 Noop，由 wire 注入 Redis 实现）
 
 	// OpenAI privacy: 刷新成功后检查并设置 training opt-out
 	privacyClientFactory PrivacyClientFactory
@@ -110,6 +112,7 @@ func NewTokenRefreshService(
 		cacheInvalidator: cacheInvalidator,
 		schedulerCache:   schedulerCache,
 		tempUnschedCache: tempUnschedCache,
+		leaderLease:      NoopLeaderLease(),
 		stopCh:           make(chan struct{}),
 		runCtx:           runCtx,
 		runCancel:        runCancel,
@@ -128,6 +131,7 @@ func NewTokenRefreshService(
 		grokOAuthService = grokOAuthServices[0]
 	}
 	grokRefresher := NewGrokTokenRefresher(grokOAuthService)
+	kiroRefresher := NewKiroTokenRefresher(nil, nil)
 
 	// Each provider is registered exactly once. The same registry supplies both
 	// execution and repository eligibility, preventing future platform drift.
@@ -137,6 +141,7 @@ func NewTokenRefreshService(
 		{platform: PlatformGemini, refresher: geminiRefresher, executor: geminiRefresher},
 		{platform: PlatformAntigravity, refresher: agRefresher, executor: agRefresher},
 		{platform: PlatformGrok, refresher: grokRefresher, executor: grokRefresher},
+		{platform: PlatformKiro, refresher: kiroRefresher, executor: kiroRefresher},
 	}
 
 	return s
@@ -182,6 +187,26 @@ func (s *TokenRefreshService) SetRefreshPolicy(policy BackgroundRefreshPolicy) {
 
 func (s *TokenRefreshService) SetAccountRuntimeBlocker(blocker AccountRuntimeBlocker) {
 	s.runtimeBlocker = blocker
+}
+
+// SetLeaderLease 注入跨副本领导者租约；nil 时保持构造时的 Noop 默认值。
+func (s *TokenRefreshService) SetLeaderLease(lease LeaderLease) {
+	if lease == nil {
+		return
+	}
+	s.leaderLease = lease
+}
+
+func (s *TokenRefreshService) SetKiroRefreshTransport(httpUpstream HTTPUpstream, tlsFPProfileService *TLSFingerprintProfileService) {
+	if s == nil {
+		return
+	}
+	for _, registration := range s.registrations {
+		if refresher, ok := registration.refresher.(*KiroTokenRefresher); ok {
+			refresher.SetHTTPUpstream(httpUpstream)
+			refresher.SetTLSFingerprintProfileService(tlsFPProfileService)
+		}
+	}
 }
 
 func (s *TokenRefreshService) notifyAccountSchedulingBlocked(account *Account, until time.Time, reason string) {
@@ -489,6 +514,7 @@ func (s *TokenRefreshService) processRefreshContext(parent context.Context) {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(parent, s.cycleTimeout())
+	defer s.scheduleKiroModelCatalogRefresh(parent)
 	defer cancel()
 
 	pager := s.candidatePager

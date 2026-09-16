@@ -205,6 +205,7 @@ const upstreamSyncPlatforms = new Set([
   'openai',
   'gemini',
   'antigravity',
+  'kiro',
   'grok',
   'kimi',
   'zhipu',

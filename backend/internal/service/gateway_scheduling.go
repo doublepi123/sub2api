@@ -2540,9 +2540,14 @@ func (s *GatewayService) diagnoseSelectionFailure(
 		}
 	}
 	if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
+		detail := fmt.Sprintf("model=%s", requestedModel)
+		if acc.Platform == PlatformKiro {
+			decision, _ := s.kiroCatalogDecide(ctx, acc, requestedModel)
+			detail = fmt.Sprintf("model=%s reason=%s", kiroUpstreamModel(acc, requestedModel), decision)
+		}
 		return selectionFailureDiagnosis{
 			Category: "model_unsupported",
-			Detail:   fmt.Sprintf("model=%s", requestedModel),
+			Detail:   detail,
 		}
 	}
 	if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
@@ -2612,6 +2617,16 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 		if publicModel, modelOK := RequestedPublicModelFromContext(ctx); modelOK && !explicitModelMappingClaims(*account, publicModel) {
 			return false
 		}
+	}
+	if account.Platform == PlatformKiro {
+		if !s.isModelSupportedByAccount(account, requestedModel) {
+			return false
+		}
+		if strings.TrimSpace(requestedModel) == "" {
+			return true
+		}
+		_, allowed, _ := s.kiroCatalogEvaluate(ctx, account, requestedModel)
+		return allowed
 	}
 	if account.Platform == PlatformAntigravity {
 		if strings.TrimSpace(requestedModel) == "" {
