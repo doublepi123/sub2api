@@ -501,7 +501,7 @@ func TestAccountGetModelMapping_AntigravityGemini31ProAliasesRespectWildcard(t *
 	}
 }
 
-func TestAccountGetModelMapping_AntigravityUpgradesLegacyGeminiFlashBareMappings(t *testing.T) {
+func TestAccountGetModelMapping_AntigravityPreservesGeminiFlashBareMappings(t *testing.T) {
 	t.Parallel()
 
 	account := &Account{
@@ -516,14 +516,12 @@ func TestAccountGetModelMapping_AntigravityUpgradesLegacyGeminiFlashBareMappings
 	}
 
 	mapping := account.GetModelMapping()
-	if got := mapping["gemini-3.6-flash"]; got != domain.AntigravityGemini36FlashDefaultModel {
-		t.Fatalf("expected legacy Gemini 3.6 bare mapping to upgrade to %q, got %q", domain.AntigravityGemini36FlashDefaultModel, got)
-	}
-	if got := mapping["gemini-3.7-flash"]; got != domain.AntigravityGemini37FlashDefaultModel {
-		t.Fatalf("expected legacy Gemini 3.7 bare mapping to upgrade to %q, got %q", domain.AntigravityGemini37FlashDefaultModel, got)
-	}
-	if got := mapping["gemini-3.8-flash"]; got != domain.AntigravityGemini38FlashDefaultModel {
-		t.Fatalf("expected legacy Gemini 3.8 bare mapping to upgrade to %q, got %q", domain.AntigravityGemini38FlashDefaultModel, got)
+	// 裸名必须原样保留：改写成具体档位会让 resolveGeminiThinkingVariant
+	// 把它当成用户显式指定而跳过 thinkingConfig 推导。
+	for _, model := range []string{"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"} {
+		if got := mapping[model]; got != model {
+			t.Fatalf("expected bare %s to stay self-mapped, got %q", model, got)
+		}
 	}
 	for _, model := range []string{
 		"gemini-3.6-flash-low",
