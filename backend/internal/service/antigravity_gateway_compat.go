@@ -212,17 +212,11 @@ func (s *AntigravityGatewayService) prepareAntigravityCompatCall(
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
 	}
 
-	// 与 ForwardGemini 一致：裸 Gemini 模型名按 thinking 配置解析到上游实际存在的
-	// -low/-medium/-high 变体。缺少这一步时裸名会被直接透传，上游返回
-	// 404 "Requested entity was not found."
-	mappedModel, variantResolved := resolveGeminiThinkingVariantForLevel(
+	mappedModel := s.getMappedModelForThinkingLevel(
 		account,
 		request.originalModel,
 		geminiThinkingLevelFromClaudeThinking(claudeRequest.Thinking),
 	)
-	if !variantResolved {
-		mappedModel = s.getMappedModel(account, request.originalModel)
-	}
 	if mappedModel == "" {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		message := fmt.Sprintf("model %s not in whitelist", request.originalModel)
