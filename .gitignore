@@ -157,6 +157,7 @@ aicodex
 output/
 .firecrawl/
 .codegraph/
+issues/
 
 # Vitest / Vite cache at repo root
 .vite/

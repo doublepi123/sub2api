@@ -109,6 +109,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	// 8-11. Authenticate, build and send the platform-specific request.
 	var resp *http.Response
 	var upstreamURL string
+	var reasoningEffort *string
 	if account.Platform == PlatformKiro {
 		upstreamURL = kiro.RuntimeURL(account.GetCredential("region"))
 		resp, err = s.forwardKiroAnthropicResponse(ctx, account, anthropicBody, mappedModel, true, kiroConversationSeed(parsed))
@@ -122,11 +123,15 @@ func (s *GatewayService) ForwardAsChatCompletions(
 			proxyURL = account.Proxy.URL()
 		}
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-		upstreamReq, _, buildErr := s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
+		upstreamReq, forwardedBody, buildErr := s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
 		releaseUpstreamCtx()
 		if buildErr != nil {
 			return nil, fmt.Errorf("build upstream request: %w", buildErr)
 		}
+		// Bill the final Anthropic effort after conversion and account normalization.
+		// For example, OpenAI xhigh is forwarded as output_config.effort=max.
+		reasoningEffort = NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
+		reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, mappedModel)
 		upstreamURL = upstreamReq.URL.String()
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	}
@@ -176,14 +181,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 	}
 
-	// 13. Extract reasoning effort from CC request body
-	reasoningEffort := extractCCReasoningEffortFromBody(body, mappedModel, originalModel)
-	// 国产模型默认 effort 补充：本路径是客户端 CC 请求 → Anthropic 上游，
-	// 如果上游是 passback-required 国产模型 (Kimi-anthropic / GLM-anthropic / MiniMax)
-	// 且客户端在 body 里传了 thinking.type=enabled，补中默认 effort。
-	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, mappedModel)
-
-	// 14. Handle normal response
+	// 13. Handle normal response
 	// Read Anthropic SSE → convert to Responses events → convert to CC format
 	var result *ForwardResult
 	var handleErr error
