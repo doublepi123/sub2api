@@ -652,3 +652,77 @@ func BenchmarkSanitizeOpenAIResponsesToolParameterTypes_ByteSpanPatch(b *testing
 		_, _, _ = sanitizeOpenAIResponsesToolParameterTypes(body)
 	}
 }
+
+// 回归锁：客户端把 "required" 发成 null 时，xAI 返回
+// `/required: null is not of type "array"`，Moonshot 返回
+// `parameters is not a valid moonshot flavored json schema`，均为 400。
+func TestSanitizeOpenAIResponsesToolParameterTypes_DropsNullRequired(t *testing.T) {
+	body := []byte(`{
+		"model": "grok-4.7",
+		"tools": [
+			{
+				"type": "function",
+				"name": "read_file",
+				"parameters": {
+					"type": "object",
+					"properties": {"path": {"type": "string"}},
+					"required": null
+				}
+			}
+		]
+	}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	// null 的 required 被整键删除：JSON Schema 里缺省 required 等价于无必填项。
+	require.False(t, gjson.GetBytes(sanitized, "tools.0.parameters.required").Exists())
+	// 其余定义原样保留。
+	require.Equal(t, "object", gjson.GetBytes(sanitized, "tools.0.parameters.type").String())
+	require.Equal(t, "string", gjson.GetBytes(sanitized, "tools.0.parameters.properties.path.type").String())
+	require.Equal(t, "read_file", gjson.GetBytes(sanitized, "tools.0.name").String())
+	require.Equal(t, "grok-4.7", gjson.GetBytes(sanitized, "model").String())
+}
+
+func TestSanitizeOpenAIResponsesToolParameterTypes_KeepsValidRequired(t *testing.T) {
+	body := []byte(`{
+		"tools": [
+			{
+				"type": "function",
+				"name": "read_file",
+				"parameters": {
+					"type": "object",
+					"properties": {"path": {"type": "string"}},
+					"required": ["path"]
+				}
+			}
+		]
+	}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, []string{"path"}, func() []string {
+		out := []string{}
+		for _, v := range gjson.GetBytes(sanitized, "tools.0.parameters.required").Array() {
+			out = append(out, v.String())
+		}
+		return out
+	}())
+}
+
+// Grok 与国产供应商必须走到同一套清理，否则裸 null required 会直达上游。
+func TestSanitizeOpenAIResponsesToolSchemasForPlatform_DropsNullRequired(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","name":"f","parameters":{"type":"object","required":null}}]}`)
+
+	for _, platform := range []string{PlatformGrok, PlatformOpenAI, PlatformAnthropic, PlatformKimi} {
+		t.Run(platform, func(t *testing.T) {
+			sanitized, changed, err := sanitizeOpenAIResponsesToolSchemasForPlatform(body, platform)
+			require.NoError(t, err)
+			require.True(t, changed)
+			require.False(t, gjson.GetBytes(sanitized, "tools.0.parameters.required").Exists())
+		})
+	}
+}
