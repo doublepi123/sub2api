@@ -30,14 +30,20 @@ export const GROUP_PLATFORM_OPTIONS = [
   { value: 'composite', label: 'Composite' }
 ] as const satisfies readonly PlatformOption<GroupPlatform>[]
 
-/** Platforms that carry per-user quota limits, in display order. */
+/** Platforms that carry per-user quota limits, in display order.
+ *  Keep aligned with backend/internal/service/domain_constants.go AllowedQuotaPlatforms. */
 export const PLATFORM_QUOTA_PLATFORMS = [
   'anthropic',
   'openai',
   'gemini',
   'antigravity',
   'kiro',
-  'grok'
+  'grok',
+  'kimi',
+  'zhipu',
+  'deepseek',
+  'minimax',
+  'opencode_go'
 ] as const satisfies readonly AccountPlatform[]
 
 export type PlatformQuotaPlatform = (typeof PLATFORM_QUOTA_PLATFORMS)[number]

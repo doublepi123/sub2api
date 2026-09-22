@@ -129,8 +129,6 @@ const emit = defineEmits(['close', 'success'])
 const { t } = useI18n()
 const appStore = useAppStore()
 
-const PLATFORMS: readonly PlatformQuotaPlatform[] = PLATFORM_QUOTA_PLATFORMS
-
 interface QuotaRow {
   platform: PlatformQuotaPlatform
   daily_limit_usd: number | null
@@ -177,7 +175,7 @@ function emptyRow(p: PlatformQuotaPlatform): QuotaRow {
 function normalize(items: PlatformQuotaItem[]): QuotaRow[] {
   const byPlatform = new Map<PlatformQuotaPlatform, PlatformQuotaItem>()
   for (const it of items) byPlatform.set(it.platform, it)
-  return PLATFORMS.map((p) => {
+  return PLATFORM_QUOTA_PLATFORMS.map((p) => {
     const it = byPlatform.get(p)
     if (!it) return emptyRow(p)
     return {
@@ -206,7 +204,7 @@ async function load() {
     savedConfigured.value = configuredPlatforms(data.platform_quotas || [])
   } catch {
     appStore.showError(t('admin.users.platformQuota.loadFailed'))
-    quotas.value = PLATFORMS.map(emptyRow)
+    quotas.value = PLATFORM_QUOTA_PLATFORMS.map(emptyRow)
     savedConfigured.value = new Set()
   } finally {
     loading.value = false
