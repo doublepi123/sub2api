@@ -490,7 +490,7 @@ func openAIResponsesToolSchemaChildContext(
 		switch {
 		case openAIResponsesJSONStringMatchesAny(key,
 			"additionalProperties", "additionalItems", "contains", "not", "if", "then", "else",
-			"propertyNames", "unevaluatedProperties", "unevaluatedItems"):
+			"propertyNames", "unevaluatedProperties", "unevaluatedItems", "contentSchema"):
 			return openAIResponsesToolSchema, false
 		case openAIResponsesJSONStringEquals(key, "items"):
 			return openAIResponsesToolSchemaOrArray, false
