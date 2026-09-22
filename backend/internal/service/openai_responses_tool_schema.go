@@ -466,7 +466,9 @@ func openAIResponsesToolSchemaChildContext(
 		}
 	case openAIResponsesToolSchemaTool:
 		switch {
-		case openAIResponsesJSONStringEquals(key, "parameters"):
+		// Anthropic Messages carries the same JSON Schema under input_schema, so
+		// /v1/messages tools must reach the sanitizer too.
+		case openAIResponsesJSONStringMatchesAny(key, "parameters", "input_schema"):
 			return openAIResponsesToolSchema, true
 		case openAIResponsesJSONStringEquals(key, "function"):
 			return openAIResponsesToolSchemaFunction, false

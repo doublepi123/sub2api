@@ -726,3 +726,41 @@ func TestSanitizeOpenAIResponsesToolSchemasForPlatform_DropsNullRequired(t *test
 		})
 	}
 }
+
+// 回归锁：/v1/messages 的工具 schema 在 input_schema 下，早前只认 parameters，
+// 导致 Anthropic 协议的工具请求绕过清理，裸 null 直达上游触发 400。
+func TestSanitizeOpenAIResponsesToolParameterTypes_AnthropicInputSchema(t *testing.T) {
+	body := []byte(`{
+		"model": "grok-4.7",
+		"tools": [
+			{
+				"name": "read_file",
+				"description": "read",
+				"input_schema": {
+					"type": "object",
+					"properties": {"path": {"type": "string"}},
+					"required": null
+				}
+			}
+		]
+	}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(sanitized, "tools.0.input_schema.required").Exists())
+	require.Equal(t, "object", gjson.GetBytes(sanitized, "tools.0.input_schema.type").String())
+	require.Equal(t, "string", gjson.GetBytes(sanitized, "tools.0.input_schema.properties.path.type").String())
+	require.Equal(t, "read_file", gjson.GetBytes(sanitized, "tools.0.name").String())
+}
+
+func TestSanitizeOpenAIResponsesToolParameterTypes_AnthropicInputSchemaNullType(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"f","input_schema":{"type":null,"properties":{}}}]}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "object", gjson.GetBytes(sanitized, "tools.0.input_schema.type").String())
+}
