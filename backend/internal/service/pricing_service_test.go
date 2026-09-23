@@ -1191,3 +1191,17 @@ func TestCalculateCost_ClaudeSonnetCatalogLadderIsDataDriven(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, cost.LongContextBillingApplied, "恰好 200000 不进高档（严格大于）")
 }
+
+// claude-opus-5-5 含有 "claude-opus-5" 子串，家族匹配顺序一旦颠倒就会按 Opus 5
+// 的 $5/$25 计费，而官方价是 $4/$20。
+func TestPricingService_Opus55UsesOwnPricing(t *testing.T) {
+	opus55 := &LiteLLMModelPricing{InputCostPerToken: 4e-06, OutputCostPerToken: 2e-05, CacheReadInputTokenCost: 2e-07}
+	opus5 := &LiteLLMModelPricing{InputCostPerToken: 5e-06, OutputCostPerToken: 2.5e-05, CacheReadInputTokenCost: 5e-07}
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+		"claude-opus-5-5": opus55,
+		"claude-opus-5":   opus5,
+	}}
+
+	require.Same(t, opus55, svc.GetModelPricing("claude-opus-5-5"))
+	require.Same(t, opus5, svc.GetModelPricing("claude-opus-5"))
+}

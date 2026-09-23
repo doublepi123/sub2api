@@ -1339,6 +1339,9 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 	// 因子串关系误匹配 "claude-opus-4-7"（opus-4.7 系列）。
 	// 注意：原 map 实现存在 Go map 迭代随机性导致的同类 bug，此处改为有序切片修复。
 	families := []modelFamily{
+		// Opus 5.5 必须排在 Opus 5 之前：claude-opus-5-5 含有 "claude-opus-5" 子串，
+		// 顺序颠倒会让 5.5 落到 Opus 5 的 $5/$25，而官方价是 $4/$20（超收 25%）。
+		{name: "opus-5.5", match: []string{"claude-opus-5-5", "claude-opus-5.5"}, pricing: []string{"claude-opus-5-5", "claude-opus-5.5"}},
 		// Opus 5 与 Opus 4.8 同价（$5/$25 per MTok）。定价数据缺失 claude-opus-5 时
 		// 必须回退到 4.8，否则会掉进 "opus-4" 系列按 $15/$75 计费（3 倍超收）。
 		{name: "opus-5", match: []string{"claude-opus-5"}, pricing: []string{"claude-opus-5", "claude-opus-4-8"}},

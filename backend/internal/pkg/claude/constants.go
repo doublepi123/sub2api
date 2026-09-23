@@ -82,7 +82,9 @@ const DefaultCacheControlTTL = "5m"
 //
 // ⚠️ 读取实际生效的版本号请用 CLIVersion()，它会叠加 SUB2API_CLAUDE_CLI_VERSION 覆盖。
 // 直接引用本常量只在"表达内置基线"时才正确（例如覆盖值的下限校验）。
-const CLICurrentVersion = "2.1.258"
+// Anthropic 对 claude-opus-5-5 设有客户端版本闸门：低于 2.1.280 的请求会被拒为
+// claude_code_version_too_old，因此基线必须不低于该版本。
+const CLICurrentVersion = "2.1.280"
 
 // FullClaudeCodeMimicryBetas 返回最"像"真实 Claude Code CLI 的完整 beta 列表，
 // 用于 OAuth 账号伪装成 Claude Code 时使用。
@@ -114,7 +116,7 @@ var DefaultHeaders = map[string]string{
 	// 版本参考：对齐 Parrot (src/transform/cc_mimicry.py:49) 的 CLI_USER_AGENT。
 	"User-Agent":                                "claude-cli/" + CLIVersion() + " (external, cli)",
 	"X-Stainless-Lang":                          "js",
-	"X-Stainless-Package-Version":               "0.94.0",
+	"X-Stainless-Package-Version":               "0.112.1",
 	"X-Stainless-OS":                            "Linux",
 	"X-Stainless-Arch":                          "arm64",
 	"X-Stainless-Runtime":                       "node",
@@ -170,6 +172,12 @@ var DefaultModels = []Model{
 		Type:        "model",
 		DisplayName: "Claude Opus 4.8",
 		CreatedAt:   "2026-05-29T00:00:00Z",
+	},
+	{
+		ID:          "claude-opus-5-5",
+		Type:        "model",
+		DisplayName: "Claude Opus 5.5",
+		CreatedAt:   "2026-09-22T00:00:00Z",
 	},
 	{
 		ID:          "claude-opus-5",

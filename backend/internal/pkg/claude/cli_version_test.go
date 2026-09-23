@@ -1,6 +1,19 @@
 package claude
 
-import "testing"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// bumpPatch 返回比内置基线高一个补丁位的版本号，避免测试写死具体数字后
+// 在下次抬升 CLICurrentVersion 时失效。
+func bumpPatch(version string) string {
+	parts := strings.Split(version, ".")
+	patch, _ := strconv.Atoi(parts[2])
+	return fmt.Sprintf("%s.%s.%d", parts[0], parts[1], patch+1)
+}
 
 func TestIsSupportedCLIVersion(t *testing.T) {
 	cases := []struct {
@@ -9,7 +22,7 @@ func TestIsSupportedCLIVersion(t *testing.T) {
 		want    bool
 	}{
 		{"内置基线本身", CLICurrentVersion, true},
-		{"高于基线的补丁位", "2.1.259", true},
+		{"高于基线的补丁位", bumpPatch(CLICurrentVersion), true},
 		{"高于基线的次版本", "2.2.0", true},
 		{"高于基线的主版本", "3.0.0", true},
 		{"低于基线", "2.1.219", false},
@@ -41,8 +54,8 @@ func TestResolveCLIVersion(t *testing.T) {
 	}{
 		{"未配置时用内置基线", "", CLICurrentVersion},
 		{"只有空白等同未配置", "   ", CLICurrentVersion},
-		{"合法覆盖生效", "2.1.259", "2.1.259"},
-		{"两侧空白被裁掉", "  2.1.259  ", "2.1.259"},
+		{"合法覆盖生效", bumpPatch(CLICurrentVersion), bumpPatch(CLICurrentVersion)},
+		{"两侧空白被裁掉", "  " + bumpPatch(CLICurrentVersion) + "  ", bumpPatch(CLICurrentVersion)},
 		{"非法值回落基线", "not-a-version", CLICurrentVersion},
 		{"向下覆盖被拒", "2.0.0", CLICurrentVersion},
 		{"预发布后缀被拒（会毒化账号指纹）", "2.2.0-local", CLICurrentVersion},
