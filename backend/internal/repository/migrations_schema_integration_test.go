@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -373,5 +374,27 @@ WHERE table_schema = 'public'
 		require.Equal(t, "YES", row.Nullable, "nullable mismatch for %s.%s", table, column)
 	} else {
 		require.Equal(t, "NO", row.Nullable, "nullable mismatch for %s.%s", table, column)
+	}
+}
+
+// Upstream migrations rebuild these CHECK constraints from their own platform
+// lists, which never include the fork-only kiro platform. The constraints must
+// still accept every platform in service.AllowedQuotaPlatforms after all
+// migrations have run, including both kiro and the upstream typesafe platform.
+func TestMigrationsRunner_PlatformChecksAcceptAllQuotaPlatforms(t *testing.T) {
+	tx := testTx(t)
+	ctx := context.Background()
+
+	for _, constraint := range []string{
+		"user_platform_quotas_platform_check",
+		"composite_model_routes_target_platform_check",
+	} {
+		var definition string
+		require.NoError(t, tx.QueryRowContext(ctx,
+			"SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1", constraint,
+		).Scan(&definition))
+		for _, platform := range service.AllowedQuotaPlatforms {
+			require.Containsf(t, definition, "'"+platform+"'", "%s must allow %s", constraint, platform)
+		}
 	}
 }
