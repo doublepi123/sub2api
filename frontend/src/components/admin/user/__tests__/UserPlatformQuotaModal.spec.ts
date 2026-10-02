@@ -78,7 +78,7 @@ beforeEach(() => {
 })
 
 describe('UserPlatformQuotaModal', () => {
-  it.each([0, 4, 14])('does not turn a negative limit in input %s into unlimited', async (index) => {
+  it.each([0, 4, 14, 17])('does not turn a negative limit in input %s into unlimited', async (index) => {
     const w = await mountAndOpen()
     await w.findAll('input[type=number]')[index].setValue('-1')
     await w.findAll('button').find(b => b.text() === 'admin.users.platformQuota.save')!.trigger('click')
@@ -116,11 +116,11 @@ describe('UserPlatformQuotaModal', () => {
     w.unmount()
   })
 
-  it.each(['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'] as const)(
+  it.each(['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'typesafe'] as const)(
     'saves edits to %s without erasing existing platform limits', async (platform) => {
       const existing: PlatformQuotaUpdateItem[] = [
         { platform: 'openai', daily_limit_usd: 10, weekly_limit_usd: 20, monthly_limit_usd: 100 },
-        ...(['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'] as const).map(p => ({
+        ...(['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'typesafe'] as const).map(p => ({
           platform: p, daily_limit_usd: 0, weekly_limit_usd: null, monthly_limit_usd: 50,
         })),
       ]
