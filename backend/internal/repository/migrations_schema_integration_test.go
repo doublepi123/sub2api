@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -377,10 +376,11 @@ WHERE table_schema = 'public'
 	}
 }
 
-// Upstream migrations rebuild these CHECK constraints from their own platform
-// lists, which never include the fork-only kiro platform. The constraints must
-// still accept every platform in service.AllowedQuotaPlatforms after all
-// migrations have run, including both kiro and the upstream typesafe platform.
+// Platform membership is validated by the application catalog (domain/platforms.go)
+// after the migrations run; the database-level platform CHECK constraints on
+// user_platform_quotas and composite_model_routes must not exist, so newly
+// registered platforms (kiro, command_code, cline, ...) never require a
+// constraint-rebuilding migration. Other CHECK constraints are unaffected.
 func TestMigrationsRunner_PlatformChecksAcceptAllQuotaPlatforms(t *testing.T) {
 	tx := testTx(t)
 	ctx := context.Background()
@@ -389,12 +389,11 @@ func TestMigrationsRunner_PlatformChecksAcceptAllQuotaPlatforms(t *testing.T) {
 		"user_platform_quotas_platform_check",
 		"composite_model_routes_target_platform_check",
 	} {
-		var definition string
+		var count int
 		require.NoError(t, tx.QueryRowContext(ctx,
-			"SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1", constraint,
-		).Scan(&definition))
-		for _, platform := range service.AllowedQuotaPlatforms {
-			require.Containsf(t, definition, "'"+platform+"'", "%s must allow %s", constraint, platform)
-		}
+			"SELECT COUNT(*) FROM pg_constraint WHERE conname = $1", constraint,
+		).Scan(&count))
+		require.Zerof(t, count, "%s must not exist after migrations: platform membership is validated by the application catalog", constraint)
 	}
+
 }
