@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // issue #7919：claude-haiku-5-5 请求校验（官方 migration guide 口径）。
@@ -29,9 +30,14 @@ func TestValidateClaude55Request_Haiku55(t *testing.T) {
 		{name: "temperature 1 passes", extra: `,"temperature":1`},
 		{name: "non-default temperature rejected", extra: `,"temperature":0.5`, wantErr: "non-default temperature"},
 		{name: "top_p 0.99 passes", extra: `,"top_p":0.99`},
-		// 与 sonnet-5-5 同口径：区间 [0.99, 1.0] 放行，越界才拦；
-		// 官方称 top_p=1 会 400，如上游收紧以它为准，网关保持 fail-open。
-		{name: "top_p 1 passes (sonnet bar)", extra: `,"top_p":1`},
+		{name: "top_p 1 rejected", extra: `,"top_p":1`, wantErr: "non-default top_p"},
+		{name: "between tools rejected", extra: `,"thinking":{"type":"between_tools"}`, wantErr: "claude-haiku-5-5"},
+		{name: "adaptive budget rejected", extra: `,"thinking":{"type":"adaptive","budget_tokens":1000}`, wantErr: "budget_tokens"},
+		{name: "disabled block binding rejected", extra: `,"thinking":{"type":"disabled","block_binding":"relaxed"}`, wantErr: "block_binding"},
+		{name: "disabled low allowed", extra: `,"thinking":{"type":"disabled"},"output_config":{"effort":"low"}`},
+		{name: "disabled high allowed", extra: `,"thinking":{"type":"disabled"},"output_config":{"effort":"high"}`},
+		{name: "adaptive summarized allowed", extra: `,"thinking":{"type":"adaptive","display":"summarized"}`},
+		{name: "named tool choice allowed", extra: `,"tool_choice":{"type":"tool","name":"lookup"}`},
 		{name: "top_p 0.5 rejected", extra: `,"top_p":0.5`, wantErr: "non-default top_p"},
 		{name: "top_k rejected", extra: `,"top_k":5`, wantErr: "does not support top_k"},
 		{name: "temperature and top_p together rejected", extra: `,"temperature":1,"top_p":0.99`, wantErr: "does not allow temperature and top_p together"},
@@ -51,4 +57,29 @@ func TestValidateClaude55Request_Haiku55(t *testing.T) {
 				"error %q should contain %q", err.Error(), tc.wantErr)
 		})
 	}
+}
+
+func TestHaiku55RejectsAssistantPrefill(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"prefix"}]}`)
+	require.ErrorContains(t, validateClaude55Request(body, "claude-haiku-5-5"), "prefill")
+	require.NoError(t, validateClaude55Request(body, "claude-haiku-4-5-20251001"))
+}
+
+func TestHaiku55OAuthPreservesDisabledSummarizedAndForcedToolChoice(t *testing.T) {
+	for _, choice := range []string{`{"type":"any"}`, `{"type":"tool","name":"sessions_list"}`} {
+		body := []byte(`{"model":"claude-haiku-5-5","max_tokens":512,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"sessions_list","input_schema":{"type":"object"}}],"thinking":{"type":"disabled"},"output_config":{"effort":"low"},"tool_choice":` + choice + `}`)
+		require.NoError(t, validateClaude55Request(body, "claude-haiku-5-5"))
+		out, _ := normalizeClaudeOAuthRequestBody(body, "claude-haiku-5-5", claudeOAuthNormalizeOptions{})
+		require.Equal(t, "disabled", gjson.GetBytes(out, "thinking.type").String())
+		require.JSONEq(t, choice, gjson.GetBytes(out, "tool_choice").Raw)
+		rw := buildToolNameRewriteFromBody(out)
+		out = applyToolNameRewriteToBody(out, rw)
+		if gjson.GetBytes(out, "tool_choice.type").String() == "tool" {
+			require.Equal(t, gjson.GetBytes(out, "tools.0.name").String(), gjson.GetBytes(out, "tool_choice.name").String())
+		}
+	}
+	body := []byte(`{"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive","display":"summarized"},"top_p":0.99}`)
+	out, _ := normalizeClaudeOAuthRequestBody(body, "claude-haiku-5-5", claudeOAuthNormalizeOptions{})
+	require.Equal(t, "summarized", gjson.GetBytes(out, "thinking.display").String())
+	require.False(t, gjson.GetBytes(out, "temperature").Exists())
 }

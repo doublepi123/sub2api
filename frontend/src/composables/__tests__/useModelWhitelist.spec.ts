@@ -8,6 +8,18 @@ import { buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatfo
 import { BUILTIN_PLATFORM_CATALOG, resetPlatformCatalog, setPlatformCatalog } from '@/constants/platformCatalog'
 
 describe('useModelWhitelist', () => {
+  it('Anthropic Haiku 5.5 保留旧模型且不扩散到其他供应商', () => {
+    expect(getModelsByPlatform('anthropic')).toEqual(expect.arrayContaining([
+      'claude-haiku-5-5', 'claude-haiku-4-5-20251001'
+    ]))
+    expect(getPresetMappingsByPlatform('anthropic')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Haiku 5.5', from: 'claude-haiku-5-5', to: 'claude-haiku-5-5' })
+    ]))
+    for (const platform of ['kiro', 'antigravity', 'opencode_go']) {
+      expect(getModelsByPlatform(platform)).not.toContain('claude-haiku-5-5')
+    }
+  })
+
   it('平台清单中没有内置模型列表的多协议供应商不预填白名单', () => {
     setPlatformCatalog({
       ...BUILTIN_PLATFORM_CATALOG,

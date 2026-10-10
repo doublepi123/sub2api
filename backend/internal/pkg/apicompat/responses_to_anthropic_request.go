@@ -16,7 +16,8 @@ import (
 func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, error) {
 	isOpus55 := claude.IsOpus55(req.Model)
 	isSonnet55 := claude.IsSonnet55(req.Model)
-	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, isOpus55 || isSonnet55)
+	isHaiku55 := claude.IsHaiku55(req.Model)
+	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, isOpus55 || isSonnet55 || isHaiku55)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +61,7 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 	// additionally supports between_tools to disable up-front thinking.
 	// Resolve the upstream model before conversion: client aliases need not
 	// identify a Claude model.
-	if isOpus55 || isSonnet55 {
+	if isOpus55 || isSonnet55 || isHaiku55 {
 		var choice struct {
 			Type string `json:"type"`
 		}
@@ -69,7 +70,7 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 				return nil, fmt.Errorf("invalid tool_choice: %w", err)
 			}
 		}
-		if choice.Type == "any" || choice.Type == "tool" {
+		if !isHaiku55 && (choice.Type == "any" || choice.Type == "tool") {
 			return nil, fmt.Errorf("%s does not support forced tool_choice; use auto or none", req.Model)
 		}
 		effort := "medium"
@@ -84,6 +85,22 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		}
 		if req.Reasoning != nil && req.Reasoning.Effort != "" {
 			effort = req.Reasoning.Effort
+		}
+		if isHaiku55 {
+			if req.Temperature != nil && *req.Temperature != 1 {
+				return nil, fmt.Errorf("claude-haiku-5-5 only supports temperature=1")
+			}
+			if req.TopP != nil && *req.TopP != 0.99 {
+				return nil, fmt.Errorf("claude-haiku-5-5 only supports top_p=0.99")
+			}
+			if req.Temperature != nil && req.TopP != nil {
+				return nil, fmt.Errorf("claude-haiku-5-5 does not allow temperature and top_p together")
+			}
+			if effort == "none" {
+				out.Thinking = &AnthropicThinking{Type: "disabled"}
+				out.OutputConfig = &AnthropicOutputConfig{Effort: "low"}
+				return out, nil
+			}
 		}
 		if isSonnet55 && effort == "none" {
 			// OpenAI's no-reasoning request maps to Sonnet 5.5's lowest

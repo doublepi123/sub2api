@@ -2113,6 +2113,7 @@ func TestNewModelPricingCatalogFallbackAndContext(t *testing.T) {
 					tokens := UsageTokens{
 						InputTokens: n - 3000, OutputTokens: 500,
 						CacheReadTokens: 2000, CacheCreationTokens: 1000,
+						CacheCreation5mTokens: 400, CacheCreation1hTokens: 600,
 					}
 					cost, err := svc.CalculateCost(model, tokens, 1)
 					require.NoError(t, err)
@@ -2121,11 +2122,17 @@ func TestNewModelPricingCatalogFallbackAndContext(t *testing.T) {
 						im, om = 5.0, 5.0
 					}
 					require.InDelta(t, float64(tokens.InputTokens)*1e-7*im, cost.InputCost, 1e-10)
-					require.InDelta(t, 1000*1.25e-7*im, cost.CacheCreationCost, 1e-10)
+					require.InDelta(t, (400*1.25e-7+600*2e-7)*im, cost.CacheCreationCost, 1e-10)
 					require.InDelta(t, 2000*1e-8*im, cost.CacheReadCost, 1e-10)
 					require.InDelta(t, 500*5e-7*om, cost.OutputCost, 1e-10)
 					require.InDelta(t, cost.InputCost+cost.OutputCost+cost.CacheCreationCost+cost.CacheReadCost, cost.TotalCost, 1e-10)
 					require.Equal(t, n > 100000, cost.LongContextBillingApplied)
+					if n == 100000 {
+						require.InDelta(t, 0.01014, cost.TotalCost, 1e-10)
+					}
+					if n == 100001 {
+						require.InDelta(t, 0.0507005, cost.TotalCost, 1e-10)
+					}
 				}
 			})
 		}

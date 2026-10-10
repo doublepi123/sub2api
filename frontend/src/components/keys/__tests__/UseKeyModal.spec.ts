@@ -748,6 +748,19 @@ describe('UseKeyModal', () => {
     await tab!.trigger('click')
     await nextTick()
     const models = JSON.parse(wrapper.find('pre code').text()).provider.anthropic.models
+    expect(models['claude-haiku-5-5']).toEqual({
+      name: 'Claude Haiku 5.5',
+      limit: { context: 1000000, output: 128000 },
+      modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+      options: { thinking: { type: 'adaptive' }, effort: 'medium' },
+      variants: {
+        low: { effort: 'low' },
+        medium: { effort: 'medium' },
+        high: { effort: 'high' },
+        xhigh: { effort: 'xhigh' },
+        max: { effort: 'max' }
+      }
+    })
     expect(models['claude-opus-5-5'].limit).toEqual({ context: 1000000, output: 128000 })
     expect(models['claude-opus-5-5'].options).toEqual({ thinking: { type: 'adaptive' }, effort: 'medium' })
     expect(models['claude-opus-5-5'].variants.xhigh.effort).toBe('xhigh')

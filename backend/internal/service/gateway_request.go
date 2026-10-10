@@ -582,6 +582,18 @@ func validateClaude55Request(body []byte, model string) error {
 	}
 	isSonnet55 := claude.IsSonnet55(model)
 	isHaiku55 := claude.IsHaiku55(model)
+	if isHaiku55 {
+		if gjson.GetBytes(body, "thinking.type").String() != "enabled" && gjson.GetBytes(body, "thinking.budget_tokens").Exists() {
+			return fmt.Errorf("claude-haiku-5-5 does not support thinking.budget_tokens; use adaptive thinking")
+		}
+		if gjson.GetBytes(body, "thinking.type").String() == "disabled" && gjson.GetBytes(body, "thinking.block_binding").Exists() {
+			return fmt.Errorf("claude-haiku-5-5 thinking.type=disabled does not support block_binding")
+		}
+		messages := gjson.GetBytes(body, "messages").Array()
+		if len(messages) > 0 && messages[len(messages)-1].Get("role").String() == "assistant" {
+			return fmt.Errorf("claude-haiku-5-5 does not support assistant prefill")
+		}
+	}
 	thinkingType := gjson.GetBytes(body, "thinking.type").String()
 	switch thinkingType {
 	case "disabled", "enabled":
@@ -592,7 +604,8 @@ func validateClaude55Request(body []byte, model string) error {
 				return fmt.Errorf("claude-haiku-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort")
 			}
 			switch gjson.GetBytes(body, "output_config.effort").String() {
-			case "xhigh", "max":
+			case "", "low", "medium", "high":
+			default:
 				return fmt.Errorf("claude-haiku-5-5 thinking.type=disabled supports only low, medium or high effort")
 			}
 			break
@@ -602,6 +615,9 @@ func validateClaude55Request(body []byte, model string) error {
 		}
 		return fmt.Errorf("claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort")
 	case "between_tools":
+		if isHaiku55 {
+			return fmt.Errorf("claude-haiku-5-5 does not support thinking.type=between_tools; use adaptive or disabled")
+		}
 		if !isSonnet55 {
 			return fmt.Errorf("claude-opus-5-5 requires adaptive thinking; thinking.type=between_tools is unsupported")
 		}
@@ -637,7 +653,7 @@ func validateClaude55Request(body []byte, model string) error {
 		if temperature := gjson.GetBytes(body, "temperature"); temperature.Exists() && (temperature.Type != gjson.Number || temperature.Float() != 1) {
 			return fmt.Errorf("%s does not support non-default temperature", modelName)
 		}
-		if topP := gjson.GetBytes(body, "top_p"); topP.Exists() && (topP.Type != gjson.Number || topP.Float() < 0.99 || topP.Float() > 1) {
+		if topP := gjson.GetBytes(body, "top_p"); topP.Exists() && (topP.Type != gjson.Number || topP.Float() < 0.99 || topP.Float() > 1 || (isHaiku55 && topP.Float() != 0.99)) {
 			return fmt.Errorf("%s does not support non-default top_p", modelName)
 		}
 		if gjson.GetBytes(body, "top_k").Exists() {
