@@ -960,6 +960,8 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold",
 		// Kiro catalog scope is checked before the selected account is hydrated.
 		"region", "profile_arn", "auth_method", "client_id", "base_url",
+		// Gemini explicit-cache candidate admission also reads this projection.
+		"auth_mode", service.GeminiExplicitCacheUpstreamCredentialKey, service.GeminiExplicitCacheUpstreamMaxTTLCredentialKey,
 	}
 	filtered := make(map[string]any)
 	for _, key := range keys {

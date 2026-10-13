@@ -221,6 +221,32 @@ func TestKiroCooldownKey_TempUnschedBoundaries(t *testing.T) {
 	}
 }
 
+func TestKiroCooldownKey_TempUnschedRespectsExplicitScope(t *testing.T) {
+	for _, scope := range []string{"", TempUnschedScopeModel, TempUnschedScopeAccount} {
+		t.Run(scope, func(t *testing.T) {
+			repo := &kiroInvalidModelRepo{}
+			svc := &RateLimitService{accountRepo: repo}
+			account := &Account{ID: 506, Platform: PlatformKiro, Type: AccountTypeOAuth,
+				Credentials: map[string]any{"model_mapping": map[string]any{"public-opus": "claude-opus-4-5"}}}
+			rule := TempUnschedulableRule{Scope: scope, DurationMinutes: 5}
+			require.True(t, svc.triggerTempUnschedulable(context.Background(), account, rule, 0,
+				http.StatusBadRequest, "capacity", []byte(`{"message":"capacity unavailable"}`), "public-opus"))
+			if scope == TempUnschedScopeAccount {
+				require.Equal(t, 1, repo.tempCalls)
+				require.Empty(t, repo.modelRateLimitCalls)
+				return
+			}
+			require.Zero(t, repo.tempCalls)
+			require.Len(t, repo.modelRateLimitCalls, 1)
+			require.Equal(t, "claude-opus-4-5", repo.modelRateLimitCalls[0].scope)
+			var state TempUnschedState
+			require.NoError(t, json.Unmarshal([]byte(repo.modelRateLimitCalls[0].reason), &state))
+			require.Equal(t, TempUnschedScopeModel, state.Scope)
+			require.Equal(t, "claude-opus-4-5", state.Model)
+		})
+	}
+}
+
 func TestHandleUpstreamModelNotFound_KiroInvalidModelID_TriggersEarlyRefreshHint(t *testing.T) {
 	// Given
 	repo := &kiroInvalidModelRepo{}

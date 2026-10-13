@@ -42,6 +42,24 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM schema_migrations").Scan(&applied))
 	require.GreaterOrEqual(t, applied, 7, "expected schema_migrations to contain applied migrations")
 
+	// Same numeric prefix is valid: the runner records complete filenames.
+	for _, filename := range []string{
+		"243_drop_platform_check_constraints.sql",
+		"243_gemini_cached_contents.sql",
+		"244_gemini_cached_contents_channel_usage.sql",
+		"245_gemini_cached_contents_mutation_lease.sql",
+	} {
+		var count int
+		require.NoError(t, tx.QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM schema_migrations WHERE filename = $1", filename).Scan(&count))
+		require.Equal(t, 1, count, filename)
+	}
+	requireColumn(t, tx, "gemini_cached_contents", "public_id", "character varying", 64, false)
+	requireColumn(t, tx, "gemini_cached_contents", "channel_usage", "jsonb", 0, false)
+	requireColumn(t, tx, "gemini_cached_contents", "mutation_token", "character varying", 64, true)
+	requireColumn(t, tx, "gemini_cached_contents", "mutation_lease_until", "timestamp with time zone", 0, true)
+	requireIndex(t, tx, "gemini_cached_contents", "idx_gemini_cached_contents_pending_mutation")
+
 	// users: columns required by repository queries
 	requireColumn(t, tx, "users", "username", "character varying", 100, false)
 	requireColumn(t, tx, "users", "notes", "text", 0, false)

@@ -604,8 +604,7 @@ func validateClaude55Request(body []byte, model string) error {
 				return fmt.Errorf("claude-haiku-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort")
 			}
 			switch gjson.GetBytes(body, "output_config.effort").String() {
-			case "", "low", "medium", "high":
-			default:
+			case "xhigh", "max":
 				return fmt.Errorf("claude-haiku-5-5 thinking.type=disabled supports only low, medium or high effort")
 			}
 			break
@@ -615,10 +614,10 @@ func validateClaude55Request(body []byte, model string) error {
 		}
 		return fmt.Errorf("claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort")
 	case "between_tools":
-		if isHaiku55 {
-			return fmt.Errorf("claude-haiku-5-5 does not support thinking.type=between_tools; use adaptive or disabled")
-		}
 		if !isSonnet55 {
+			if isHaiku55 {
+				return fmt.Errorf("claude-haiku-5-5 requires adaptive thinking; thinking.type=between_tools is unsupported (use thinking.type=disabled at high effort or below)")
+			}
 			return fmt.Errorf("claude-opus-5-5 requires adaptive thinking; thinking.type=between_tools is unsupported")
 		}
 		effort := gjson.GetBytes(body, "output_config.effort").String()
@@ -653,7 +652,9 @@ func validateClaude55Request(body []byte, model string) error {
 		if temperature := gjson.GetBytes(body, "temperature"); temperature.Exists() && (temperature.Type != gjson.Number || temperature.Float() != 1) {
 			return fmt.Errorf("%s does not support non-default temperature", modelName)
 		}
-		if topP := gjson.GetBytes(body, "top_p"); topP.Exists() && (topP.Type != gjson.Number || topP.Float() < 0.99 || topP.Float() > 1 || (isHaiku55 && topP.Float() != 0.99)) {
+		// Haiku 5.5 只接受显式 top_p=0.99；保留 Sonnet 5.5 既有的区间策略。
+		if topP := gjson.GetBytes(body, "top_p"); topP.Exists() && (topP.Type != gjson.Number ||
+			(isHaiku55 && topP.Float() != 0.99) || (isSonnet55 && (topP.Float() < 0.99 || topP.Float() > 1))) {
 			return fmt.Errorf("%s does not support non-default top_p", modelName)
 		}
 		if gjson.GetBytes(body, "top_k").Exists() {

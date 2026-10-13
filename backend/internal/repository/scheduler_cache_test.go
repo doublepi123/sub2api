@@ -20,6 +20,39 @@ func TestFilterSchedulerCredentialsKeepsSubscriptionPlanType(t *testing.T) {
 	require.NotContains(t, filtered, "refresh_token")
 }
 
+func TestFilterSchedulerMetadataKeepsKiroCatalogAndThresholdKeys(t *testing.T) {
+	credentials := map[string]any{
+		"region": "us-east-1", "profile_arn": "arn:kiro:profile", "auth_method": "idc",
+		"client_id": "client", "base_url": "https://kiro.example.com", "account_scheduling_threshold": 80,
+	}
+	require.Equal(t, credentials, filterSchedulerCredentials(credentials))
+	extra := map[string]any{
+		"detected_model_catalog":     map[string]any{"state": "ready"},
+		"kiro_credential_generation": "generation", "kiro_model_catalog_mode": "auto",
+		"kiro_sched_reset_at": "reset", "kiro_sched_tier": "pro",
+		"kiro_sched_tier_updated_at": "updated", "kiro_sched_usage_updated_at": "updated",
+		"kiro_sched_utilization": 75,
+	}
+	require.Equal(t, extra, filterSchedulerExtra(extra))
+}
+
+func TestFilterSchedulerCredentialsKeepsGeminiExplicitCacheKeys(t *testing.T) {
+	filtered := filterSchedulerCredentials(map[string]any{
+		"api_key":              "k",
+		"base_url":             "https://gw.example.com",
+		"auth_mode":            "apikey",
+		"service_account_json": "secret",
+		service.GeminiExplicitCacheUpstreamCredentialKey:       true,
+		service.GeminiExplicitCacheUpstreamMaxTTLCredentialKey: 3600,
+	})
+
+	require.Equal(t, "https://gw.example.com", filtered["base_url"])
+	require.Equal(t, "apikey", filtered["auth_mode"])
+	require.Equal(t, true, filtered[service.GeminiExplicitCacheUpstreamCredentialKey])
+	require.Equal(t, 3600, filtered[service.GeminiExplicitCacheUpstreamMaxTTLCredentialKey])
+	require.NotContains(t, filtered, "service_account_json")
+}
+
 func TestSchedulerMetadataAccountKeepsOpenAISubscriptionIdentity(t *testing.T) {
 	account := service.Account{
 		ID:       24,
