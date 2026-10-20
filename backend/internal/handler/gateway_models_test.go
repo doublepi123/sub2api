@@ -584,7 +584,8 @@ func TestGatewayModels_AntigravityGroupFallsBackToAntigravityModels(t *testing.T
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, "list", got.Object)
 	ids := modelIDsForTest(got.Data)
-	require.Contains(t, ids, "gemini-3.8-flash")
+	require.NotContains(t, ids, "gemini-3.8-flash")
+	require.Contains(t, ids, "gemini-3.8-flash-high")
 	require.Contains(t, ids, "gemini-3.7-flash-high")
 	require.Contains(t, ids, "gemini-2.5-flash")
 }
