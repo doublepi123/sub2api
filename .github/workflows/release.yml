@@ -115,7 +115,7 @@ jobs:
 
       - name: Verify Go version
         run: |
-          go version | grep -q 'go1.27.2'
+          go version | grep -q 'go1.27.3'
 
       # Keep the fork's single-job publication flow; unlike upstream's matrix,
       # this job builds every target, so its cache is scoped to the host runner.
