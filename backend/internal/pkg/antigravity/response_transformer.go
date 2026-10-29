@@ -15,7 +15,7 @@ import (
 // an invalid function call. Callers must not turn this into a successful empty
 // assistant turn; the request can be retried while no downstream bytes have
 // been committed.
-var ErrMalformedFunctionCall = errors.New("gemini returned MALFORMED_FUNCTION_CALL")
+var ErrMalformedFunctionCall = errors.New("upstream returned MALFORMED_FUNCTION_CALL")
 
 // HasMalformedFunctionCall reports whether the first Gemini candidate ended
 // with MALFORMED_FUNCTION_CALL.
