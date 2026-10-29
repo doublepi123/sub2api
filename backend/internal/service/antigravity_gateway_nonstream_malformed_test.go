@@ -34,14 +34,21 @@ func TestAntigravityMalformedFunctionCallNonStreaming(t *testing.T) {
 				if protocol == "chat" {
 					handle = svc.handleChatCompletionsNonStreamingFromAntigravity
 				}
-				_, err := handle(c, resp, time.Now(), "test-model")
-				require.Equal(t, tc.status, recorder.Code)
+				result, err := handle(c, resp, time.Now(), "test-model")
 				if tc.status == http.StatusBadGateway {
-					require.Error(t, err)
-					require.Contains(t, recorder.Body.String(), `"type":"malformed_function_call"`)
-					require.Contains(t, recorder.Body.String(), "MALFORMED_FUNCTION_CALL")
-					require.NotContains(t, recorder.Body.String(), `"status":"completed"`)
+					// The fork retries malformed turns before committing any client
+					// output. The outer handler writes the 502 only after retries end.
+					var failover *UpstreamFailoverError
+					require.ErrorAs(t, err, &failover)
+					require.Nil(t, result)
+					require.Equal(t, tc.status, failover.StatusCode)
+					require.Equal(t, antigravityMalformedFunctionCallReason, failover.Reason)
+					require.True(t, failover.RetryableOnSameAccount)
+					require.Contains(t, string(failover.ResponseBody), `"code":"malformed_function_call"`)
+					require.False(t, c.Writer.Written())
+					require.Empty(t, recorder.Body.String())
 				} else {
+					require.Equal(t, tc.status, recorder.Code)
 					require.NoError(t, err)
 					if protocol == "responses" {
 						require.Contains(t, recorder.Body.String(), `"status":"completed"`)
