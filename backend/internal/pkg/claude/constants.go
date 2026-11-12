@@ -88,8 +88,9 @@ const DefaultCacheControlTTL = "5m"
 // ⚠️ 读取实际生效的版本号请用 CLIVersion()，它会叠加 SUB2API_CLAUDE_CLI_VERSION 覆盖。
 // 直接引用本常量只在"表达内置基线"时才正确（例如覆盖值的下限校验）。
 // Anthropic 对 claude-opus-5-5 设有客户端版本闸门：低于 2.1.280 的请求会被拒为
-// claude_code_version_too_old，因此基线必须不低于该版本。
-const CLICurrentVersion = "2.1.280"
+// claude_code_version_too_old。上游为 Fable/Mythos 5.2 把基线抬到 2.1.321，
+// 仍满足该下限，因此基线取上游更高版本（只升不降）。
+const CLICurrentVersion = "2.1.321"
 
 // FullClaudeCodeMimicryBetas 返回最"像"真实 Claude Code CLI 的完整 beta 列表，
 // 用于 OAuth 账号伪装成 Claude Code 时使用。
@@ -126,6 +127,7 @@ func DefaultHeaders() map[string]string {
 		"User-Agent":       DefaultUserAgent(),
 		"X-Stainless-Lang": "js",
 		// 抓取真实 Claude Code 2.1.280 流量得到的 SDK 版本；与 CLI 版本不匹配会被判第三方。
+		// 上游仍停留在 0.94.0；fork 保留 0.112.1 的抓包对齐值，CLI 基线可以更高（只升不降）。
 		"X-Stainless-Package-Version":               "0.112.1",
 		"X-Stainless-OS":                            "Linux",
 		"X-Stainless-Arch":                          "arm64",
@@ -148,6 +150,18 @@ type Model struct {
 
 // DefaultModels Claude Code 客户端支持的默认模型列表
 var DefaultModels = []Model{
+	{
+		ID:          "claude-fable-5-2",
+		Type:        "model",
+		DisplayName: "Claude Fable 5.2",
+		CreatedAt:   "2026-11-09T00:00:00Z",
+	},
+	{
+		ID:          "claude-mythos-5-2",
+		Type:        "model",
+		DisplayName: "Claude Mythos 5.2",
+		CreatedAt:   "2026-11-09T00:00:00Z",
+	},
 	{
 		ID:          "claude-fable-5-1",
 		Type:        "model",
