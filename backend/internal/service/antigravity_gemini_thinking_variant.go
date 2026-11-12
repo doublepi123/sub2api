@@ -188,21 +188,6 @@ func isAntigravityCarbonModel(model string) bool {
 	return rest == "" || rest == "-low" || rest == "-medium" || rest == "-high"
 }
 
-// antigravityCarbonDefaultLevel 识别“裸名映射到自身某一档后缀”的默认映射，
-// 例如 gemini-4-carbon → gemini-4-carbon-medium。这种映射表达的是默认档位，
-// 不是指向其它模型的显式别名，客户端显式请求 low/high 时仍应继续在后缀里挑选。
-func antigravityCarbonDefaultLevel(model, mapped string) (string, bool) {
-	if !isAntigravityCarbonModel(model) || model != antigravityCarbonModelBase {
-		return "", false
-	}
-	for _, level := range []string{"low", "medium", "high"} {
-		if mapped == model+"-"+level {
-			return level, true
-		}
-	}
-	return "", false
-}
-
 // normalizeCarbonNativeThinking 归一 Carbon 原生请求里的 legacy thinkingBudget：
 // Antigravity 的 Carbon 只接受 thinkingLevel，带 thinkingBudget 的请求可能被上游拒绝，
 // 因此删除 thinkingBudget，并在裸名（尚未落到后缀）时把它换算成 thinkingLevel。
@@ -237,7 +222,8 @@ func normalizeCarbonNativeThinking(body []byte, mappedModel string) []byte {
 // resolveGeminiThinkingVariant 为裸 Gemini 模型名挑选账号映射表里存在的思考深度变体。
 // 返回 (映射后的上游模型名, 是否命中)。未命中时调用方应回退到常规 getMappedModel 流程。
 func resolveGeminiThinkingVariant(account *Account, requestedModel string, body []byte) (string, bool) {
-	return resolveGeminiThinkingVariantForLevel(account, requestedModel, geminiThinkingLevelFromBody(body))
+	level, _ := geminiThinkingLevelFromBodyIfSpecified(body)
+	return resolveGeminiThinkingVariantForLevel(account, requestedModel, level)
 }
 
 // resolveGeminiThinkingVariantForLevel 是 resolveGeminiThinkingVariant 的协议无关内核：
@@ -262,27 +248,18 @@ func resolveGeminiThinkingVariantForLevel(account *Account, requestedModel strin
 	// 当映射表中存在该模型的精确思考变体（-high/-medium/-low/-tiered）时继续解析变体，
 	// 避免把上游不存在的裸名直接发出导致 404；而对已在映射表中的真实裸模型（如 gemini-2.5-flash），
 	// 仅查找精确变体键以避免被通配符误匹配。
-	// Carbon 的默认映射是“裸名 → 自身某一档后缀”（medium），它表达默认档位而不是显式别名，
-	// 因此同样继续解析变体，并在客户端未指定档位时使用该默认档位。
+	// Carbon 的裸名按既有设计映射到自身，后缀才是上游身份；它的默认档位是
+	// 上游的 medium（defaultAgentModelId=gemini-4-carbon-medium）。只在客户端
+	// 没有指定档位、且模型是裸 Carbon 时改用 medium，其它 Gemini 仍按 high。
 	mapped, modelMatched := resolveRequestedModelInMapping(mapping, model)
-	carbonDefaultLevel := ""
 	if modelMatched && strings.TrimSpace(mapped) != model {
-		level, ok := antigravityCarbonDefaultLevel(model, strings.TrimSpace(mapped))
-		if !ok {
-			return "", false
-		}
-		carbonDefaultLevel = level
+		return "", false
 	}
 
 	if preferred == "" {
-		switch {
-		case carbonDefaultLevel != "":
-			preferred = carbonDefaultLevel
-		case model == antigravityCarbonModelBase:
-			// 裸 Carbon 的默认档位是 medium（上游 defaultAgentModelId），
-			// 与是否有显式 bare 映射无关。
+		if model == antigravityCarbonModelBase {
 			preferred = "medium"
-		default:
+		} else {
 			preferred = "high"
 		}
 	}

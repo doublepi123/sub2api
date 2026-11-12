@@ -11,8 +11,9 @@ import (
 
 // Antigravity 的 fetchAvailableModels 对 Carbon 只登记三档后缀
 // （gemini-4-carbon-low / -medium / -high），没有裸名；上游自己的
-// defaultAgentModelId 就是 gemini-4-carbon-medium。默认映射因此把裸名
-// 当作客户端别名落到 medium，而客户端显式请求的 low/high 仍要生效。
+// defaultAgentModelId 就是 gemini-4-carbon-medium。默认映射沿用现有设计
+// “裸名 → 自身 + 三档后缀 → 自身”，由 dynamic helper 在客户端未指定档位时
+// 为裸 Carbon 选 medium，显式 low/high 时选对应后缀。
 func TestAntigravityCarbonBareRequestDefaultsToMedium(t *testing.T) {
 	svc := &AntigravityGatewayService{}
 
@@ -33,9 +34,9 @@ func TestAntigravityCarbonBareRequestDefaultsToMedium(t *testing.T) {
 		}
 	})
 
-	t.Run("persisted default mapping with bare alias", func(t *testing.T) {
+	t.Run("persisted default mapping keeps bare self-mapping", func(t *testing.T) {
 		account := newAntigravityAccountWithMapping(map[string]string{
-			"gemini-4-carbon":        "gemini-4-carbon-medium",
+			"gemini-4-carbon":        "gemini-4-carbon",
 			"gemini-4-carbon-low":    "gemini-4-carbon-low",
 			"gemini-4-carbon-medium": "gemini-4-carbon-medium",
 			"gemini-4-carbon-high":   "gemini-4-carbon-high",
@@ -46,6 +47,34 @@ func TestAntigravityCarbonBareRequestDefaultsToMedium(t *testing.T) {
 		require.Equal(t,
 			"gemini-4-carbon-high",
 			svc.getMappedModelForThinkingLevel(account, "gemini-4-carbon", "high"))
+		require.Equal(t,
+			"gemini-4-carbon-low",
+			svc.getMappedModelForThinkingLevel(account, "gemini-4-carbon", "low"))
+	})
+
+	t.Run("administrator pinned suffix alias is respected", func(t *testing.T) {
+		account := newAntigravityAccountWithMapping(map[string]string{
+			"gemini-4-carbon":        "gemini-4-carbon-high",
+			"gemini-4-carbon-low":    "gemini-4-carbon-low",
+			"gemini-4-carbon-medium": "gemini-4-carbon-medium",
+			"gemini-4-carbon-high":   "gemini-4-carbon-high",
+		})
+		// 显式别名优先：即使客户端请求 low，也保持管理员固定的 high。
+		for _, level := range []string{"", "low", "high"} {
+			require.Equal(t,
+				"gemini-4-carbon-high",
+				svc.getMappedModelForThinkingLevel(account, "gemini-4-carbon", level))
+		}
+	})
+
+	t.Run("other Gemini models still default to high", func(t *testing.T) {
+		account := newAntigravityAccountWithMapping(map[string]string{})
+		require.Equal(t,
+			"gemini-3.8-flash-high",
+			svc.getMappedModelForThinkingLevel(account, "gemini-3.8-flash", ""))
+		require.Equal(t,
+			"gemini-3.8-flash-low",
+			svc.getMappedModelForThinkingLevel(account, "gemini-3.8-flash", "low"))
 	})
 
 	t.Run("suffix requests are already upstream identities", func(t *testing.T) {

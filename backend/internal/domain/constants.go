@@ -177,9 +177,10 @@ var DefaultAntigravityModelMapping = map[string]string{
 	// Gemini 4 models
 	// Antigravity's fetchAvailableModels only registers Carbon's three level
 	// variants (low/medium/high); the bare ID belongs to the Gemini API surface.
-	// The bare key is a client alias that defaults to the published medium tier,
-	// and the three suffix keys are the real upstream identities.
-	"gemini-4-carbon":        "gemini-4-carbon-medium",
+	// The bare key maps to itself so the dynamic thinking helper can pick a real
+	// suffix (defaulting to medium when the client pins no level); the three
+	// suffix keys are the real upstream identities.
+	"gemini-4-carbon":        "gemini-4-carbon",
 	"gemini-4-carbon-low":    "gemini-4-carbon-low",
 	"gemini-4-carbon-medium": "gemini-4-carbon-medium",
 	"gemini-4-carbon-high":   "gemini-4-carbon-high",

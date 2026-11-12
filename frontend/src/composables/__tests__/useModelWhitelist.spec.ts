@@ -261,7 +261,7 @@ describe('useModelWhitelist', () => {
 
     const presets = getPresetMappingsByPlatform('antigravity')
     expect(presets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ from: 'gemini-4-carbon', to: 'gemini-4-carbon-medium' }),
+      expect.objectContaining({ from: 'gemini-4-carbon', to: 'gemini-4-carbon' }),
       expect.objectContaining({ from: 'gemini-4-carbon-low', to: 'gemini-4-carbon-low' }),
       expect.objectContaining({ from: 'gemini-4-carbon-medium', to: 'gemini-4-carbon-medium' }),
       expect.objectContaining({ from: 'gemini-4-carbon-high', to: 'gemini-4-carbon-high' })

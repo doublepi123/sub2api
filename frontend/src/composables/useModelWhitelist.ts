@@ -396,7 +396,7 @@ const grokPresetMappings = [
 // Antigravity 预设映射（支持通配符）
 const antigravityPresetMappings = [
   // Claude 5.5 / Gemini 4 Argon / 3.8 Flash 推荐映射
-  { label: '4 Carbon→Medium', from: 'gemini-4-carbon', to: 'gemini-4-carbon-medium', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
+  { label: '4 Carbon', from: 'gemini-4-carbon', to: 'gemini-4-carbon', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
   { label: '4 Carbon Low', from: 'gemini-4-carbon-low', to: 'gemini-4-carbon-low', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
   { label: '4 Carbon Medium', from: 'gemini-4-carbon-medium', to: 'gemini-4-carbon-medium', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
   { label: '4 Carbon High', from: 'gemini-4-carbon-high', to: 'gemini-4-carbon-high', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400' },
