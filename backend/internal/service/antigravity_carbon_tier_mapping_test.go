@@ -156,27 +156,44 @@ func TestAntigravityCarbonBareRequestLevelSources(t *testing.T) {
 
 // 显式映射账号的运行时透传补齐只补三档后缀；裸名不是上游身份，
 // 因此没有被管理员显式映射的账号不会因为裸 Carbon 请求被选中。
-func TestAntigravityCarbonPassthroughAndUnmappedAccounts(t *testing.T) {
+func TestAntigravityCarbonExplicitWhitelistsAndUnentitledAccounts(t *testing.T) {
 	svc := &AntigravityGatewayService{}
-	account := newAntigravityAccountWithMapping(map[string]string{
-		"gemini-3.8-flash": "gemini-3.8-flash",
-	})
 
-	mapping := account.GetModelMapping()
+	// 已保存显式白名单但没有 Carbon 的账号（如无权限的 Pro 账号）：
+	// 无条件透传不能替它声明 Carbon，选择器也不能选中它。
+	entitledElsewhere := newAntigravityAccountWithMapping(map[string]string{
+		"gemini-3.8-flash":      "gemini-3.8-flash",
+		"gemini-4-argon-low":    "gemini-4-argon-low",
+		"gemini-4-argon-medium": "gemini-4-argon-medium",
+	})
+	mapping := entitledElsewhere.GetModelMapping()
 	for _, level := range []string{"low", "medium", "high"} {
-		model := "gemini-4-carbon-" + level
-		require.Equal(t, model, mapping[model], "passthrough must inject %s", model)
+		require.NotContains(t, mapping, "gemini-4-carbon-"+level,
+			"Carbon must not be injected into saved whitelists")
 	}
 	require.NotContains(t, mapping, "gemini-4-carbon")
+	require.Empty(t, svc.getMappedModelForThinkingLevel(entitledElsewhere, "gemini-4-carbon", ""))
+	require.Empty(t, svc.getMappedModelForThinkingLevel(entitledElsewhere, "gemini-4-carbon-medium", "medium"))
+	require.False(t, entitledElsewhere.IsModelSupported("gemini-4-carbon"))
 
-	// 透传补齐的三档后缀让裸请求仍可解析，默认档位仍是上游的 medium。
+	// 获得授权的账号由管理员显式写入 4 个键（裸名自映射 + 三档 suffix）后生效。
+	entitled := newAntigravityAccountWithMapping(map[string]string{
+		"gemini-4-carbon":        "gemini-4-carbon",
+		"gemini-4-carbon-low":    "gemini-4-carbon-low",
+		"gemini-4-carbon-medium": "gemini-4-carbon-medium",
+		"gemini-4-carbon-high":   "gemini-4-carbon-high",
+	})
 	require.Equal(t,
 		"gemini-4-carbon-medium",
-		svc.getMappedModelForThinkingLevel(account, "gemini-4-carbon", ""))
-	require.True(t, account.IsModelSupported("gemini-4-carbon-medium"))
+		svc.getMappedModelForThinkingLevel(entitled, "gemini-4-carbon", ""))
+	require.Equal(t,
+		"gemini-4-carbon-low",
+		svc.getMappedModelForThinkingLevel(entitled, "gemini-4-carbon", "low"))
+	require.Equal(t,
+		"gemini-4-carbon-high",
+		svc.getMappedModelForThinkingLevel(entitled, "gemini-4-carbon-high", "high"))
 
-	// 不含 Carbon 的账号（例如 Gemini API 平台账号没有 Antigravity 的默认透传补齐）
-	// 不会被 Carbon 请求选中。
+	// 其它平台账号（如 Gemini API）没有 Antigravity 默认目录，也不会被选中。
 	plain := &Account{
 		ID:       2,
 		Name:     "gemini-api",

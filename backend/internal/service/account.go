@@ -808,10 +808,9 @@ var antigravityDefaultPassthroughModels = []string{
 	"gemini-3.8-flash-low",
 	"gemini-3.8-flash-medium",
 	"gemini-3.8-flash-tiered",
-	// Antigravity 的 Carbon 目录只有三档后缀（fetchAvailableModels 实测），没有裸名。
-	"gemini-4-carbon-low",
-	"gemini-4-carbon-medium",
-	"gemini-4-carbon-high",
+	// Carbon 不在无条件透传列表里：它只对获得授权的账号开放（如 Ultra 账号 8），
+	// 由管理员在 credentials.model_mapping 显式配置；无条件补齐会让无权限账号
+	// （如 Pro 账号 28）也声明支持 Carbon。
 }
 
 // isAntigravityInjectedDefaultPassthrough 判断 GetModelMapping 中的 key→target 是否仅由
