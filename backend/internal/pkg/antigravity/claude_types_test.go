@@ -15,7 +15,9 @@ func TestDefaultModels_ContainsCallableEndpointModels(t *testing.T) {
 	}
 
 	requiredIDs := []string{
-		"gemini-4-carbon",
+		"gemini-4-carbon-low",
+		"gemini-4-carbon-medium",
+		"gemini-4-carbon-high",
 		"claude-opus-4-6-thinking",
 		"gemini-3.1-flash-image",
 		"gemini-pro-agent",
@@ -70,8 +72,10 @@ func TestClaudeContentItem_ThinkingAlwaysHasSignature(t *testing.T) {
 func TestIsGeminiReasoningModel_IncludesProAgent(t *testing.T) {
 	t.Parallel()
 
-	if !IsGeminiReasoningModel("gemini-4-carbon") {
-		t.Fatal("expected Carbon to be recognized as a Gemini reasoning model")
+	for _, carbon := range []string{"gemini-4-carbon-low", "gemini-4-carbon-medium", "gemini-4-carbon-high"} {
+		if !IsGeminiReasoningModel(carbon) {
+			t.Fatalf("expected %s to be recognized as a Gemini reasoning model", carbon)
+		}
 	}
 	if !IsGeminiReasoningModel("gemini-pro-agent") {
 		t.Fatal("expected gemini-pro-agent to be recognized as a Gemini reasoning model")

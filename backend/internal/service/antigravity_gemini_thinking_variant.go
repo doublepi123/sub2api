@@ -6,6 +6,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // Gemini 原生请求（/v1beta/models/{model}:generateContent 等）经 Antigravity 账号转发时，
@@ -18,7 +19,8 @@ import (
 // 按 thinkingConfig 自动挑一个变体：
 //   - thinkingLevel: "low" / "medium" / "high" → 同名后缀
 //   - thinkingBudget: -1（动态）→ high；0 → low；1..1024 → low；1025..8192 → medium；>8192 → high
-//   - 未携带 thinkingConfig → high（与 Gemini 3 系列默认开启动态思考一致）
+//   - 未携带 thinkingConfig → high（与 Gemini 3 系列默认开启动态思考一致；
+//     Carbon 例外：默认档位是上游的 medium）
 // 选中的后缀在映射表里不存在时按 high → medium → low → tiered 的顺序降级到存在的变体。
 // 显式映射（裸名映射到其他模型）始终优先；裸名自映射仅在存在精确变体键时继续推导。
 
@@ -51,38 +53,49 @@ func hasGeminiThinkingVariantSuffix(model string) bool {
 // geminiThinkingLevelFromBody 从 Gemini 原生请求体推导期望的思考档位（low/medium/high）。
 // 解析失败或未携带 thinkingConfig 时返回 "high"。
 func geminiThinkingLevelFromBody(body []byte) string {
+	if level, ok := geminiThinkingLevelFromBodyIfSpecified(body); ok {
+		return level
+	}
+	return "high"
+}
+
+// geminiThinkingLevelFromBodyIfSpecified 与 geminiThinkingLevelFromBody 同源，但把
+// "客户端没有指定档位"与"显式 high"区分开：Antigravity 的 Carbon 默认档位是
+// medium（上游 defaultAgentModelId=gemini-4-carbon-medium），默认值必须由模型决定，
+// 不能统一按 high 兜底。
+func geminiThinkingLevelFromBodyIfSpecified(body []byte) (string, bool) {
 	if len(body) == 0 {
-		return "high"
+		return "", false
 	}
 	var probe geminiThinkingConfigProbe
 	if err := json.Unmarshal(body, &probe); err != nil || probe.GenerationConfig.ThinkingConfig == nil {
-		return "high"
+		return "", false
 	}
 	tc := probe.GenerationConfig.ThinkingConfig
 	switch strings.ToLower(strings.TrimSpace(tc.ThinkingLevel)) {
 	case "low":
-		return "low"
+		return "low", true
 	case "medium":
-		return "medium"
+		return "medium", true
 	case "high":
-		return "high"
+		return "high", true
 	}
 	if tc.ThinkingBudget == nil {
-		return "high"
+		return "", false
 	}
 	budget, err := tc.ThinkingBudget.Float64()
 	if err != nil {
-		return "high"
+		return "", false
 	}
 	switch {
 	case budget < 0:
-		return "high" // -1 = 动态思考
+		return "high", true // -1 = 动态思考
 	case budget <= geminiThinkingBudgetLowMax:
-		return "low" // 含 0（关闭思考）：上游没有"无思考"变体，取最浅档，budget 本身仍原样透传
+		return "low", true // 含 0（关闭思考）：上游没有"无思考"变体，取最浅档
 	case budget <= geminiThinkingBudgetMediumMax:
-		return "medium"
+		return "medium", true
 	default:
-		return "high"
+		return "high", true
 	}
 }
 
@@ -131,23 +144,94 @@ func geminiThinkingLevelFromReasoningEffort(effort *string) (string, bool) {
 // (or omit thinking for low), neither of which is an explicit client budget.
 // Keep disabled/budget semantics, then honor effort before defaulting to high.
 func geminiThinkingLevelFromClaudeRequest(body []byte, reasoningEffort *string) string {
+	if level, ok := geminiThinkingLevelFromClaudeRequestIfSpecified(body, reasoningEffort); ok {
+		return level
+	}
+	return "high"
+}
+
+// geminiThinkingLevelFromClaudeRequestIfSpecified mirrors
+// geminiThinkingLevelFromClaudeRequest but reports whether the client actually
+// pinned a level, so Carbon can fall back to its published medium default.
+func geminiThinkingLevelFromClaudeRequestIfSpecified(body []byte, reasoningEffort *string) (string, bool) {
 	typ := gjson.GetBytes(body, "thinking.type").String()
 	if strings.EqualFold(strings.TrimSpace(typ), "disabled") {
-		return "low"
+		return "low", true
 	}
 	if budget := gjson.GetBytes(body, "thinking.budget_tokens"); budget.Exists() {
 		return geminiThinkingLevelFromClaudeThinking(&antigravity.ThinkingConfig{
 			Type: typ, BudgetTokens: int(budget.Int()),
-		})
+		}), true
 	}
 	effort := gjson.GetBytes(body, "output_config.effort").String()
 	if level, ok := geminiThinkingLevelFromReasoningEffort(&effort); ok {
-		return level
+		return level, true
 	}
 	if level, ok := geminiThinkingLevelFromReasoningEffort(reasoningEffort); ok {
-		return level
+		return level, true
 	}
-	return "high"
+	return "", false
+}
+
+// antigravityCarbonModelBase 是 Antigravity 上 Carbon 的模型族前缀。
+// 上游 fetchAvailableModels 只登记 -low/-medium/-high 三档后缀，没有裸名；
+// 裸 gemini-4-carbon 只作为客户端别名（默认落到 medium）。
+const antigravityCarbonModelBase = "gemini-4-carbon"
+
+// isAntigravityCarbonModel 判断模型名（含 models/ 前缀与三档后缀）是否属于 Carbon 族。
+func isAntigravityCarbonModel(model string) bool {
+	name := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(model, "models/")))
+	if !strings.HasPrefix(name, antigravityCarbonModelBase) {
+		return false
+	}
+	rest := strings.TrimPrefix(name, antigravityCarbonModelBase)
+	return rest == "" || rest == "-low" || rest == "-medium" || rest == "-high"
+}
+
+// antigravityCarbonDefaultLevel 识别“裸名映射到自身某一档后缀”的默认映射，
+// 例如 gemini-4-carbon → gemini-4-carbon-medium。这种映射表达的是默认档位，
+// 不是指向其它模型的显式别名，客户端显式请求 low/high 时仍应继续在后缀里挑选。
+func antigravityCarbonDefaultLevel(model, mapped string) (string, bool) {
+	if !isAntigravityCarbonModel(model) || model != antigravityCarbonModelBase {
+		return "", false
+	}
+	for _, level := range []string{"low", "medium", "high"} {
+		if mapped == model+"-"+level {
+			return level, true
+		}
+	}
+	return "", false
+}
+
+// normalizeCarbonNativeThinking 归一 Carbon 原生请求里的 legacy thinkingBudget：
+// Antigravity 的 Carbon 只接受 thinkingLevel，带 thinkingBudget 的请求可能被上游拒绝，
+// 因此删除 thinkingBudget，并在裸名（尚未落到后缀）时把它换算成 thinkingLevel。
+// 已经带后缀的请求由后缀决定档位，只删除 budget，不再写入 level。
+func normalizeCarbonNativeThinking(body []byte, mappedModel string) []byte {
+	if len(body) == 0 || !isAntigravityCarbonModel(mappedModel) {
+		return body
+	}
+	const thinkingConfigPath = "generationConfig.thinkingConfig"
+	thinkingConfig := gjson.GetBytes(body, thinkingConfigPath)
+	if !thinkingConfig.Exists() || !thinkingConfig.IsObject() {
+		return body
+	}
+	if !thinkingConfig.Get("thinkingBudget").Exists() {
+		return body
+	}
+	level := strings.ToLower(strings.TrimSpace(thinkingConfig.Get("thinkingLevel").String()))
+	out, err := sjson.DeleteBytes(body, thinkingConfigPath+".thinkingBudget")
+	if err != nil {
+		return body
+	}
+	if level == "" && !hasGeminiThinkingVariantSuffix(strings.ToLower(strings.TrimPrefix(mappedModel, "models/"))) {
+		if derived, ok := geminiThinkingLevelFromBodyIfSpecified(body); ok {
+			if updated, err := sjson.SetBytes(out, thinkingConfigPath+".thinkingLevel", derived); err == nil {
+				out = updated
+			}
+		}
+	}
+	return out
 }
 
 // resolveGeminiThinkingVariant 为裸 Gemini 模型名挑选账号映射表里存在的思考深度变体。
@@ -178,13 +262,29 @@ func resolveGeminiThinkingVariantForLevel(account *Account, requestedModel strin
 	// 当映射表中存在该模型的精确思考变体（-high/-medium/-low/-tiered）时继续解析变体，
 	// 避免把上游不存在的裸名直接发出导致 404；而对已在映射表中的真实裸模型（如 gemini-2.5-flash），
 	// 仅查找精确变体键以避免被通配符误匹配。
+	// Carbon 的默认映射是“裸名 → 自身某一档后缀”（medium），它表达默认档位而不是显式别名，
+	// 因此同样继续解析变体，并在客户端未指定档位时使用该默认档位。
 	mapped, modelMatched := resolveRequestedModelInMapping(mapping, model)
+	carbonDefaultLevel := ""
 	if modelMatched && strings.TrimSpace(mapped) != model {
-		return "", false
+		level, ok := antigravityCarbonDefaultLevel(model, strings.TrimSpace(mapped))
+		if !ok {
+			return "", false
+		}
+		carbonDefaultLevel = level
 	}
 
 	if preferred == "" {
-		preferred = "high"
+		switch {
+		case carbonDefaultLevel != "":
+			preferred = carbonDefaultLevel
+		case model == antigravityCarbonModelBase:
+			// 裸 Carbon 的默认档位是 medium（上游 defaultAgentModelId），
+			// 与是否有显式 bare 映射无关。
+			preferred = "medium"
+		default:
+			preferred = "high"
+		}
 	}
 	order := []string{preferred}
 	for _, level := range []string{"high", "medium", "low", "tiered"} {

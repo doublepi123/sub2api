@@ -175,12 +175,18 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-3.8-flash-medium": "gemini-3.8-flash-medium",
 	"gemini-3.8-flash-tiered": "gemini-3.8-flash-tiered",
 	// Gemini 4 models
-	// Carbon uses the published model ID; do not infer Argon-style tier aliases.
-	"gemini-4-carbon":       "gemini-4-carbon",
-	"gemini-4-argon":        "gemini-4-argon-high",
-	"gemini-4-argon-high":   "gemini-4-argon-high",
-	"gemini-4-argon-low":    "gemini-4-argon-low",
-	"gemini-4-argon-medium": "gemini-4-argon-medium",
+	// Antigravity's fetchAvailableModels only registers Carbon's three level
+	// variants (low/medium/high); the bare ID belongs to the Gemini API surface.
+	// The bare key is a client alias that defaults to the published medium tier,
+	// and the three suffix keys are the real upstream identities.
+	"gemini-4-carbon":        "gemini-4-carbon-medium",
+	"gemini-4-carbon-low":    "gemini-4-carbon-low",
+	"gemini-4-carbon-medium": "gemini-4-carbon-medium",
+	"gemini-4-carbon-high":   "gemini-4-carbon-high",
+	"gemini-4-argon":         "gemini-4-argon-high",
+	"gemini-4-argon-high":    "gemini-4-argon-high",
+	"gemini-4-argon-low":     "gemini-4-argon-low",
+	"gemini-4-argon-medium":  "gemini-4-argon-medium",
 	// Gemini 3 image 兼容映射（向 3.1 image 迁移）
 	"gemini-3-pro-image":         "gemini-3.1-flash-image",
 	"gemini-3-pro-image-preview": "gemini-3.1-flash-image",

@@ -87,8 +87,13 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	}
 
 	// 裸模型名（gemini-3.8-flash）按 thinkingConfig 解析到 -low/-medium/-high 变体；
-	// 裸名有显式映射时保持原行为。
-	mappedModel := s.getMappedModelForThinkingLevel(account, originalModel, geminiThinkingLevelFromBody(body))
+	// 裸名有显式映射时保持原行为。未指定档位时把空档位交给解析器，
+	// 让 Carbon 使用其上游默认 medium，而不是统一按 high 兜底。
+	thinkingLevel, _ := geminiThinkingLevelFromBodyIfSpecified(body)
+	mappedModel := s.getMappedModelForThinkingLevel(account, originalModel, thinkingLevel)
+	// Carbon 只接受 thinkingLevel：原生请求里的 legacy thinkingBudget 必须归一化，
+	// 不能原样透传给上游。
+	body = normalizeCarbonNativeThinking(body, mappedModel)
 	if mappedModel != "" && mappedModel != originalModel {
 		logger.LegacyPrintf("service.antigravity_gateway", "%s mapped Gemini model %s to %s", prefix, originalModel, mappedModel)
 	}

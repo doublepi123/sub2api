@@ -245,16 +245,29 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('gemini-3.8-flash-tiered')
   })
 
-  it('Gemini 4 Carbon exposes the official API model without invented aliases', () => {
-    const models = getModelsByPlatform('gemini')
-    expect(models).toContain('gemini-4-carbon')
-    expect(models).not.toContain('gemini-4-carbon-preview')
-    expect(getModelsByPlatform('antigravity')).toContain('gemini-4-carbon')
-    expect(getPresetMappingsByPlatform('antigravity')).toEqual(expect.arrayContaining([
-      expect.objectContaining({ from: 'gemini-4-carbon', to: 'gemini-4-carbon' })
+  it('Gemini 4 Carbon keeps the API surface bare and the Antigravity surface tiered', () => {
+    // Gemini Developer API / AI Studio 只暴露裸 gemini-4-carbon。
+    const geminiModels = getModelsByPlatform('gemini')
+    expect(geminiModels).toContain('gemini-4-carbon')
+    expect(geminiModels).not.toContain('gemini-4-carbon-low')
+
+    // Antigravity 的真实目录只有三档后缀（fetchAvailableModels 实测），没有裸名。
+    const antigravityModels = getModelsByPlatform('antigravity')
+    for (const tier of ['low', 'medium', 'high']) {
+      expect(antigravityModels).toContain(`gemini-4-carbon-${tier}`)
+    }
+    expect(antigravityModels).not.toContain('gemini-4-carbon')
+    expect(antigravityModels).not.toContain('gemini-4-carbon-preview')
+
+    const presets = getPresetMappingsByPlatform('antigravity')
+    expect(presets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'gemini-4-carbon', to: 'gemini-4-carbon-medium' }),
+      expect.objectContaining({ from: 'gemini-4-carbon-low', to: 'gemini-4-carbon-low' }),
+      expect.objectContaining({ from: 'gemini-4-carbon-medium', to: 'gemini-4-carbon-medium' }),
+      expect.objectContaining({ from: 'gemini-4-carbon-high', to: 'gemini-4-carbon-high' })
     ]))
-    expect(buildModelMappingObject('whitelist', ['gemini-4-carbon'], [])).toEqual({
-      'gemini-4-carbon': 'gemini-4-carbon'
+    expect(buildModelMappingObject('whitelist', ['gemini-4-carbon-high'], [])).toEqual({
+      'gemini-4-carbon-high': 'gemini-4-carbon-high'
     })
   })
 

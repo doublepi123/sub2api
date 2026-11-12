@@ -109,8 +109,10 @@ const antigravityModels = [
   'gemini-3.8-flash-medium',
   'gemini-3.8-flash-high',
   'gemini-3.8-flash-tiered',
-  // Gemini 4 系列
-  'gemini-4-carbon',
+  // Gemini 4 系列（Antigravity 目录只有 Carbon 三档后缀，裸名属于 Gemini API surface）
+  'gemini-4-carbon-low',
+  'gemini-4-carbon-medium',
+  'gemini-4-carbon-high',
   'gemini-4-argon-low',
   'gemini-4-argon-medium',
   'gemini-4-argon-high',
@@ -394,7 +396,10 @@ const grokPresetMappings = [
 // Antigravity 预设映射（支持通配符）
 const antigravityPresetMappings = [
   // Claude 5.5 / Gemini 4 Argon / 3.8 Flash 推荐映射
-  { label: '4 Carbon', from: 'gemini-4-carbon', to: 'gemini-4-carbon', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
+  { label: '4 Carbon→Medium', from: 'gemini-4-carbon', to: 'gemini-4-carbon-medium', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
+  { label: '4 Carbon Low', from: 'gemini-4-carbon-low', to: 'gemini-4-carbon-low', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
+  { label: '4 Carbon Medium', from: 'gemini-4-carbon-medium', to: 'gemini-4-carbon-medium', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
+  { label: '4 Carbon High', from: 'gemini-4-carbon-high', to: 'gemini-4-carbon-high', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400' },
   { label: '4 Argon→High', from: 'gemini-4-argon', to: 'gemini-4-argon-high', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
   { label: '4 Argon High', from: 'gemini-4-argon-high', to: 'gemini-4-argon-high', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400' },
   { label: '4 Argon Medium', from: 'gemini-4-argon-medium', to: 'gemini-4-argon-medium', color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400' },
