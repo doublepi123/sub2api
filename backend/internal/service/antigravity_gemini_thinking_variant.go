@@ -1,13 +1,51 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+type antigravityThinkingLevelContextKey struct{}
+
+// WithAntigravityThinkingLevelFromClaudeBody 从策略改写后的最终 Claude 请求体提取
+// Antigravity 思考档位写入 ctx，确保混合分组调度冷却预检与实际转发命中同一变体。
+func WithAntigravityThinkingLevelFromClaudeBody(ctx context.Context, body []byte) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// 未指定档位时不写入 ctx：由解析器按模型决定默认档位（Carbon 为 medium），
+	// 与转发阶段保持一致。
+	if level, ok := geminiThinkingLevelFromClaudeRequestIfSpecified(body, nil); ok {
+		return context.WithValue(ctx, antigravityThinkingLevelContextKey{}, level)
+	}
+	return ctx
+}
+
+// WithAntigravityThinkingLevelFromGeminiBody 从 Gemini 原生请求体提取思考档位写入 ctx。
+func WithAntigravityThinkingLevelFromGeminiBody(ctx context.Context, body []byte) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if level, ok := geminiThinkingLevelFromBodyIfSpecified(body); ok {
+		return context.WithValue(ctx, antigravityThinkingLevelContextKey{}, level)
+	}
+	return ctx
+}
+
+// AntigravityThinkingLevelFromContext 读取请求体解析出的有效 Antigravity 思考档位。
+func AntigravityThinkingLevelFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	level, ok := ctx.Value(antigravityThinkingLevelContextKey{}).(string)
+	return level, ok && level != ""
+}
 
 // Gemini 原生请求（/v1beta/models/{model}:generateContent 等）经 Antigravity 账号转发时，
 // 客户端（如 Antigravity CLI / go-genai）习惯发"裸"模型名（gemini-3.8-flash）并用
@@ -24,7 +62,7 @@ import (
 // 选中的后缀在映射表里不存在时按 high → medium → low → tiered 的顺序降级到存在的变体。
 // 显式映射（裸名映射到其他模型）始终优先；裸名自映射仅在存在精确变体键时继续推导。
 
-var geminiThinkingVariantSuffixes = []string{"-low", "-medium", "-high", "-tiered"}
+var geminiThinkingVariantSuffixes = []string{"-low", "-medium", "-high", "-xhigh", "-tiered"}
 
 const (
 	geminiThinkingBudgetLowMax    = 1024
@@ -32,25 +70,84 @@ const (
 )
 
 type geminiThinkingConfigProbe struct {
-	GenerationConfig struct {
-		ThinkingConfig *struct {
-			ThinkingBudget *json.Number `json:"thinkingBudget"`
-			ThinkingLevel  string       `json:"thinkingLevel"`
-		} `json:"thinkingConfig"`
-	} `json:"generationConfig"`
+	GenerationConfig      *geminiThinkingGenerationConfigProbe `json:"generationConfig"`
+	GenerationConfigSnake *geminiThinkingGenerationConfigProbe `json:"generation_config"`
+}
+
+type geminiThinkingGenerationConfigProbe struct {
+	ThinkingConfig      *geminiThinkingInnerProbe `json:"thinkingConfig"`
+	ThinkingConfigSnake *geminiThinkingInnerProbe `json:"thinking_config"`
+}
+
+type geminiThinkingInnerProbe struct {
+	ThinkingBudget      *json.Number `json:"thinkingBudget"`
+	ThinkingBudgetSnake *json.Number `json:"thinking_budget"`
+	ThinkingLevel       string       `json:"thinkingLevel"`
+	ThinkingLevelSnake  string       `json:"thinking_level"`
+}
+
+// isAntigravityThinkingVariantFamily 判断模型是否属于 Antigravity 按思考深度拆分的模型族
+// （gemini-* 以及 claude-opus-5-5* / claude-sonnet-5-5*）。
+func isAntigravityThinkingVariantFamily(model string) bool {
+	lower := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "models/")
+	return strings.HasPrefix(lower, "gemini-") ||
+		lower == "claude-opus-5-5" ||
+		lower == "claude-sonnet-5-5" ||
+		strings.HasPrefix(lower, "claude-opus-5-5-") ||
+		strings.HasPrefix(lower, "claude-sonnet-5-5-")
 }
 
 // hasGeminiThinkingVariantSuffix 判断模型名是否已经带了思考深度后缀。
 func hasGeminiThinkingVariantSuffix(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
 	for _, suffix := range geminiThinkingVariantSuffixes {
-		if strings.HasSuffix(model, suffix) {
+		if strings.HasSuffix(lower, suffix) {
 			return true
 		}
 	}
 	return false
 }
 
-// geminiThinkingLevelFromBody 从 Gemini 原生请求体推导期望的思考档位（low/medium/high）。
+// antigravityRateLimitModelKey 在裸 Gemini 模型按请求思考档位落到自映射变体时返回实际转发变体，
+// 避免模型级冷却将低档位失败误记到默认高档位，同时对无自映射目标的显式别名保留原名以免二次映射置空。
+func antigravityRateLimitModelKey(account *Account, originalModel, mappedModel string) string {
+	if mappedModel != "" && mappedModel != originalModel && hasGeminiThinkingVariantSuffix(mappedModel) && mapAntigravityModel(account, mappedModel) == mappedModel {
+		return mappedModel
+	}
+	return originalModel
+}
+
+// effectiveAntigravityGeminiReasoningEffort 提取转发到 Antigravity 分档模型族时实际生效的思考档位，
+// 仅在客户端显式指定了 effort 且目标属于分档模型族时返回（不给未传 effort 的请求虚构计费档位）。
+func effectiveAntigravityGeminiReasoningEffort(mappedModel string, wrappedGeminiBody []byte, hadExplicitEffort bool) *string {
+	if !hadExplicitEffort {
+		return nil
+	}
+	actualModel := strings.TrimSpace(gjson.GetBytes(wrappedGeminiBody, "model").String())
+	if actualModel == "" {
+		actualModel = mappedModel
+	}
+	lowerModel := strings.TrimPrefix(strings.ToLower(actualModel), "models/")
+	if !isAntigravityThinkingVariantFamily(lowerModel) {
+		return nil
+	}
+	requestRaw := gjson.GetBytes(wrappedGeminiBody, "request").Raw
+	if requestRaw == "" {
+		requestRaw = string(wrappedGeminiBody)
+	}
+	if effort := extractGeminiReasoningEffortFromBody([]byte(requestRaw)); effort != nil {
+		return effort
+	}
+	for _, level := range []string{"xhigh", "high", "medium", "low"} {
+		if strings.HasSuffix(lowerModel, "-"+level) {
+			resolved := level
+			return &resolved
+		}
+	}
+	return nil
+}
+
+// geminiThinkingLevelFromBody 从 Gemini 原生请求体推导期望的思考档位（low/medium/high/xhigh）。
 // 解析失败或未携带 thinkingConfig 时返回 "high"。
 func geminiThinkingLevelFromBody(body []byte) string {
 	if level, ok := geminiThinkingLevelFromBodyIfSpecified(body); ok {
@@ -68,22 +165,45 @@ func geminiThinkingLevelFromBodyIfSpecified(body []byte) (string, bool) {
 		return "", false
 	}
 	var probe geminiThinkingConfigProbe
-	if err := json.Unmarshal(body, &probe); err != nil || probe.GenerationConfig.ThinkingConfig == nil {
+	if err := json.Unmarshal(body, &probe); err != nil {
 		return "", false
 	}
-	tc := probe.GenerationConfig.ThinkingConfig
-	switch strings.ToLower(strings.TrimSpace(tc.ThinkingLevel)) {
-	case "low":
+	gc := probe.GenerationConfig
+	if gc == nil {
+		gc = probe.GenerationConfigSnake
+	}
+	if gc == nil {
+		return "", false
+	}
+	tc := gc.ThinkingConfig
+	if tc == nil {
+		tc = gc.ThinkingConfigSnake
+	}
+	if tc == nil {
+		return "", false
+	}
+	rawLevel := strings.TrimSpace(tc.ThinkingLevel)
+	if rawLevel == "" {
+		rawLevel = strings.TrimSpace(tc.ThinkingLevelSnake)
+	}
+	switch strings.ToLower(rawLevel) {
+	case "minimal", "low":
 		return "low", true
 	case "medium":
 		return "medium", true
 	case "high":
 		return "high", true
+	case "xhigh":
+		return "xhigh", true
 	}
-	if tc.ThinkingBudget == nil {
+	rawBudget := tc.ThinkingBudget
+	if rawBudget == nil {
+		rawBudget = tc.ThinkingBudgetSnake
+	}
+	if rawBudget == nil {
 		return "", false
 	}
-	budget, err := tc.ThinkingBudget.Float64()
+	budget, err := rawBudget.Float64()
 	if err != nil {
 		return "", false
 	}
@@ -123,7 +243,9 @@ func geminiThinkingLevelFromClaudeThinking(thinking *antigravity.ThinkingConfig)
 }
 
 // geminiThinkingLevelFromReasoningEffort uses the same variant scale for
-// OpenAI reasoning effort and Anthropic output_config.effort.
+// OpenAI reasoning effort and Anthropic output_config.effort. xhigh/max select
+// the -xhigh variant where the account has one (Gemini 4 Hydrogen); the
+// resolver falls back to -high for families without it.
 func geminiThinkingLevelFromReasoningEffort(effort *string) (string, bool) {
 	if effort == nil {
 		return "", false
@@ -133,8 +255,10 @@ func geminiThinkingLevelFromReasoningEffort(effort *string) (string, bool) {
 		return "low", true
 	case "medium":
 		return "medium", true
-	case "high", "xhigh", "max":
+	case "high":
 		return "high", true
+	case "xhigh", "max":
+		return "xhigh", true
 	default:
 		return "", false
 	}
@@ -178,22 +302,31 @@ func geminiThinkingLevelFromClaudeRequestIfSpecified(body []byte, reasoningEffor
 // 裸 gemini-4-carbon 只作为客户端别名（默认落到 medium）。
 const antigravityCarbonModelBase = "gemini-4-carbon"
 
-// isAntigravityCarbonModel 判断模型名（含 models/ 前缀与三档后缀）是否属于 Carbon 族。
-func isAntigravityCarbonModel(model string) bool {
+// antigravityHydrogenModelBase 是 Antigravity 上 Hydrogen 的模型族前缀：
+// 上游只登记 -low/-medium/-high/-xhigh 四档后缀，裸名同样只是客户端别名。
+const antigravityHydrogenModelBase = "gemini-4-hydrogen"
+
+// isAntigravityLevelOnlyGeminiModel 判断模型名（含 models/ 前缀与档位后缀）是否属于
+// 只接受 thinkingLevel 的 Carbon / Hydrogen 族。
+func isAntigravityLevelOnlyGeminiModel(model string) bool {
 	name := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(model, "models/")))
-	if !strings.HasPrefix(name, antigravityCarbonModelBase) {
-		return false
+	switch {
+	case strings.HasPrefix(name, antigravityHydrogenModelBase):
+		rest := strings.TrimPrefix(name, antigravityHydrogenModelBase)
+		return rest == "" || rest == "-low" || rest == "-medium" || rest == "-high" || rest == "-xhigh"
+	case strings.HasPrefix(name, antigravityCarbonModelBase):
+		rest := strings.TrimPrefix(name, antigravityCarbonModelBase)
+		return rest == "" || rest == "-low" || rest == "-medium" || rest == "-high"
 	}
-	rest := strings.TrimPrefix(name, antigravityCarbonModelBase)
-	return rest == "" || rest == "-low" || rest == "-medium" || rest == "-high"
+	return false
 }
 
-// normalizeCarbonNativeThinking 归一 Carbon 原生请求里的 legacy thinkingBudget：
-// Antigravity 的 Carbon 只接受 thinkingLevel，带 thinkingBudget 的请求可能被上游拒绝，
+// normalizeCarbonNativeThinking 归一 Carbon / Hydrogen 原生请求里的 legacy thinkingBudget：
+// 这两个模型族只接受 thinkingLevel，带 thinkingBudget 的请求可能被上游拒绝，
 // 因此删除 thinkingBudget，并在裸名（尚未落到后缀）时把它换算成 thinkingLevel。
 // 已经带后缀的请求由后缀决定档位，只删除 budget，不再写入 level。
 func normalizeCarbonNativeThinking(body []byte, mappedModel string) []byte {
-	if len(body) == 0 || !isAntigravityCarbonModel(mappedModel) {
+	if len(body) == 0 || !isAntigravityLevelOnlyGeminiModel(mappedModel) {
 		return body
 	}
 	const thinkingConfigPath = "generationConfig.thinkingConfig"
@@ -226,15 +359,12 @@ func resolveGeminiThinkingVariant(account *Account, requestedModel string, body 
 	return resolveGeminiThinkingVariantForLevel(account, requestedModel, level)
 }
 
-// resolveGeminiThinkingVariantForLevel 是 resolveGeminiThinkingVariant 的协议无关内核：
-// 调用方负责按自身协议推导 preferred 档位（Gemini 原生读 generationConfig.thinkingConfig，
-// Claude/OpenAI 兼容层读 thinking.budget_tokens），此处只做映射查找与降级。
 func resolveGeminiThinkingVariantForLevel(account *Account, requestedModel string, preferred string) (string, bool) {
 	if account == nil {
 		return "", false
 	}
-	model := strings.TrimSpace(strings.TrimPrefix(requestedModel, "models/"))
-	if !strings.HasPrefix(model, "gemini-") || hasGeminiThinkingVariantSuffix(model) {
+	model := strings.TrimPrefix(strings.TrimSpace(requestedModel), "models/")
+	if !isAntigravityThinkingVariantFamily(model) || hasGeminiThinkingVariantSuffix(model) {
 		return "", false
 	}
 	mapping := account.GetModelMapping()
@@ -264,7 +394,7 @@ func resolveGeminiThinkingVariantForLevel(account *Account, requestedModel strin
 		}
 	}
 	order := []string{preferred}
-	for _, level := range []string{"high", "medium", "low", "tiered"} {
+	for _, level := range []string{"high", "medium", "low", "xhigh", "tiered"} {
 		if level != preferred {
 			order = append(order, level)
 		}
@@ -282,6 +412,15 @@ func resolveGeminiThinkingVariantForLevel(account *Account, requestedModel strin
 		}
 		if variantMatched && strings.TrimSpace(variantMapped) != "" {
 			return variantMapped, true
+		}
+	}
+	// 当账号显式添加了裸动态分档自映射（如前端点击 Opus 5.5 / Sonnet 5.5 / 4 Hydrogen 预设
+	// 产生 base -> base），但未单独逐条录入后缀变体时，回退到官方默认分档目录避免把裸名直接发往上游 404。
+	if modelMatched && strings.TrimSpace(mapped) == model {
+		for _, level := range order {
+			if defaultTarget, ok := domain.DefaultAntigravityModelMapping[model+"-"+level]; ok && strings.TrimSpace(defaultTarget) != "" {
+				return defaultTarget, true
+			}
 		}
 	}
 	return "", false

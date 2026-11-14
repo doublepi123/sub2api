@@ -112,11 +112,11 @@ const AntigravityGemini31ProAgentModel = "gemini-pro-agent"
 // 与前端 useModelWhitelist.ts 中的 antigravityDefaultMappings 保持一致
 var DefaultAntigravityModelMapping = map[string]string{
 	// Claude 白名单
-	"claude-opus-5-5":            "claude-opus-5-5-high",     // 简称映射
+	"claude-opus-5-5":            "claude-opus-5-5",          // 按 effort 动态映射
 	"claude-opus-5-5-high":       "claude-opus-5-5-high",     // 官方模型
 	"claude-opus-5-5-medium":     "claude-opus-5-5-medium",   // 官方模型
 	"claude-opus-5-5-low":        "claude-opus-5-5-low",      // 官方模型
-	"claude-sonnet-5-5":          "claude-sonnet-5-5-high",   // 简称映射
+	"claude-sonnet-5-5":          "claude-sonnet-5-5",        // 按 effort 动态映射
 	"claude-sonnet-5-5-high":     "claude-sonnet-5-5-high",   // 官方模型
 	"claude-sonnet-5-5-medium":   "claude-sonnet-5-5-medium", // 官方模型
 	"claude-sonnet-5-5-low":      "claude-sonnet-5-5-low",    // 官方模型
@@ -188,6 +188,13 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-4-argon-high":    "gemini-4-argon-high",
 	"gemini-4-argon-low":     "gemini-4-argon-low",
 	"gemini-4-argon-medium":  "gemini-4-argon-medium",
+	// Hydrogen follows the same tiered catalog as Carbon, plus an xhigh tier;
+	// the bare key is a self-mapped client alias resolved to a real suffix.
+	"gemini-4-hydrogen":        "gemini-4-hydrogen",
+	"gemini-4-hydrogen-low":    "gemini-4-hydrogen-low",
+	"gemini-4-hydrogen-medium": "gemini-4-hydrogen-medium",
+	"gemini-4-hydrogen-high":   "gemini-4-hydrogen-high",
+	"gemini-4-hydrogen-xhigh":  "gemini-4-hydrogen-xhigh",
 	// Gemini 3 image 兼容映射（向 3.1 image 迁移）
 	"gemini-3-pro-image":         "gemini-3.1-flash-image",
 	"gemini-3-pro-image-preview": "gemini-3.1-flash-image",
