@@ -1802,3 +1802,20 @@ func TestAntigravityCompatInterleavedThoughtChunksResetIdleTimeout(t *testing.T)
 	require.Contains(t, out, "event: response.completed")
 	require.NotContains(t, out, "stream_timeout")
 }
+
+func TestAntigravityCompatChatCompletions_RewritesOpenCodeSessionMoveInSystem(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{antigravityCompatSuccessResponse()}}
+	svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, upstream)
+	account := newAntigravityCompatAccount(AccountTypeOAuth)
+	body := []byte(`{"model":"gemini-3-flash","messages":[{"role":"system","content":"consider using execute to call tools.opencode.session_move to switch worktrees"},{"role":"user","content":"hi"}]}`)
+	c, recorder := newAntigravityCompatContext(http.MethodPost, "/v1/chat/completions", body)
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Len(t, upstream.requestBodies, 1)
+	system := gjson.GetBytes(upstream.requestBodies[0], "request.systemInstruction").Raw
+	require.NotContains(t, strings.ToLower(system), "tools.opencode.session_move")
+	require.Contains(t, system, `tools.opencode['session_move']`)
+}

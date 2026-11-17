@@ -130,3 +130,19 @@ func TestTransformClaudeToGemini_RewritesOpenCodeIdentityInSystem(t *testing.T) 
 	require.Contains(t, string(body), "You are an AI coding agent, an interactive CLI agent")
 	require.Contains(t, string(body), "# Core Mandates")
 }
+
+func TestNeutralizeSystemIdentity_RewritesOpenCodeSessionMoveCall(t *testing.T) {
+	cases := map[string]string{
+		"  - tools.opencode.session_move({\n  /** Omit to move the current session. */":        "  - tools.opencode['session_move']({\n  /** Omit to move the current session. */",
+		"consider using `execute` to call `tools.opencode.session_move` and make the worktree": "consider using `execute` to call `tools.opencode['session_move']` and make the worktree",
+		"tools.OpenCode.Session_Move({":  "tools.OpenCode['Session_Move']({",
+		"tools.opencode.session":         "tools.opencode.session",
+		"tools.opencode.read({":          "tools.opencode.read({",
+		"opencode.session_move":          "opencode.session_move",
+		"tools.foo.session_move({":       "tools.foo.session_move({",
+		"tools.opencode.session_moveTo(": "tools.opencode.session_moveTo(",
+	}
+	for in, want := range cases {
+		require.Equal(t, want, NeutralizeSystemIdentity(in), "input: %q", in)
+	}
+}

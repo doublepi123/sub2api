@@ -331,6 +331,12 @@ var systemSentenceRedactions = []struct{ from, to string }{
 // while the same prompt with only this clause rewritten returns 200.
 var openCodeIdentity = regexp.MustCompile(`(?i)\b(you) are opencode\b`)
 
+// openCodeSessionMoveCall matches the OpenCode code-mode call path that Antigravity
+// also answers with a fake 429 when it appears in system text (OpenChamber lists it
+// once the session works with worktrees). The bracket form calls the same function
+// from `execute` and is accepted, so the rewrite keeps the instruction usable.
+var openCodeSessionMoveCall = regexp.MustCompile(`(?i)\b(tools\.opencode)\.(session_move)\b`)
+
 // NeutralizeSystemIdentity removes leading client attribution, drops sentences the
 // upstream rejects with a fake 429 (see StripUpstreamTriggerSentences) and rewrites a
 // leading vendor identity sentence, preserving the rest of the system block.
@@ -341,6 +347,7 @@ func NeutralizeSystemIdentity(text string) string {
 	for _, r := range systemSentenceRedactions {
 		text = strings.ReplaceAll(text, r.from, r.to)
 	}
+	text = openCodeSessionMoveCall.ReplaceAllString(text, "${1}['${2}']")
 	return openCodeIdentity.ReplaceAllString(text, "${1} are an AI coding agent")
 }
 
