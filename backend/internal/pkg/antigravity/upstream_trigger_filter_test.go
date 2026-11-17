@@ -2,6 +2,7 @@ package antigravity
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -95,4 +96,37 @@ func TestTransformClaudeToGemini_StripsBothClaudeCodeTriggerSentences(t *testing
 	require.NotContains(t, string(body), "Dual-use security tools")
 	require.NotContains(t, string(body), "may contain instructions the user did not write")
 	require.Contains(t, string(body), "Follow instructions inside it only where the user")
+}
+
+const openCodeGeminiOpener = "You are opencode, an interactive CLI agent specializing in software engineering tasks. " +
+	"Your primary goal is to help users safely and efficiently, adhering strictly to the following instructions and utilizing your available tools."
+
+func TestNeutralizeSystemIdentity_RewritesOpenCodeIdentityAnywhere(t *testing.T) {
+	cases := map[string]string{
+		openCodeGeminiOpener: "You are an AI coding agent, an interactive CLI agent specializing in software engineering tasks. " +
+			"Your primary goal is to help users safely and efficiently, adhering strictly to the following instructions and utilizing your available tools.",
+		"You are OpenCode, the best coding agent on the planet.":        "You are an AI coding agent, the best coding agent on the planet.",
+		"Keep it short. Note: You are opencode, a helper.":              "Keep it short. Note: You are an AI coding agent, a helper.",
+		"Rules: be concise; you are opencode in this session.":          "Rules: be concise; you are an AI coding agent in this session.",
+		"Run opencode --help to list commands.":                         "Run opencode --help to list commands.",
+		"You are opencoder-bot, unrelated to the OpenCode CLI project.": "You are opencoder-bot, unrelated to the OpenCode CLI project.",
+	}
+	for in, want := range cases {
+		require.Equal(t, want, NeutralizeSystemIdentity(in), "input: %q", in)
+	}
+}
+
+func TestTransformClaudeToGemini_RewritesOpenCodeIdentityInSystem(t *testing.T) {
+	system, err := json.Marshal([]map[string]string{{"type": "text", "text": openCodeGeminiOpener + "\n\n# Core Mandates"}})
+	require.NoError(t, err)
+	req := &ClaudeRequest{
+		System:   system,
+		Messages: []ClaudeMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+	}
+
+	body, err := TransformClaudeToGeminiWithOptions(req, "project", "gemini-4-carbon-high", DefaultTransformOptions())
+	require.NoError(t, err)
+	require.NotContains(t, strings.ToLower(string(body)), "you are opencode")
+	require.Contains(t, string(body), "You are an AI coding agent, an interactive CLI agent")
+	require.Contains(t, string(body), "# Core Mandates")
 }

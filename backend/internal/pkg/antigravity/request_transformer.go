@@ -325,6 +325,12 @@ var systemSentenceRedactions = []struct{ from, to string }{
 	},
 }
 
+// openCodeIdentity matches OpenCode's identity clause anywhere in a system block.
+// Antigravity answers "You are opencode" with a fake 429 regardless of case or
+// position (OpenCode's gemini.txt, default.txt and anthropic.txt all open with it),
+// while the same prompt with only this clause rewritten returns 200.
+var openCodeIdentity = regexp.MustCompile(`(?i)\b(you) are opencode\b`)
+
 // NeutralizeSystemIdentity removes leading client attribution, drops sentences the
 // upstream rejects with a fake 429 (see StripUpstreamTriggerSentences) and rewrites a
 // leading vendor identity sentence, preserving the rest of the system block.
@@ -335,7 +341,7 @@ func NeutralizeSystemIdentity(text string) string {
 	for _, r := range systemSentenceRedactions {
 		text = strings.ReplaceAll(text, r.from, r.to)
 	}
-	return text
+	return openCodeIdentity.ReplaceAllString(text, "${1} are an AI coding agent")
 }
 
 // neutralizeLeadingIdentity rewrites one leading client identity sentence.
