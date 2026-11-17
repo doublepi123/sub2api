@@ -33,6 +33,14 @@ func (r *kiroSnapshotAccountRepo) ListSchedulableByGroupIDAndPlatform(_ context.
 	return []service.Account{r.account}, nil
 }
 
+func (r *kiroSnapshotAccountRepo) ListModelAvailabilityCandidates(_ context.Context, groupID *int64, platforms []string, _ bool) ([]service.Account, error) {
+	if groupID == nil || *groupID != 10 || len(platforms) != 1 || platforms[0] != service.PlatformKiro {
+		return nil, fmt.Errorf("unexpected scheduling bucket: %v/%v", groupID, platforms)
+	}
+	r.lists++
+	return []service.Account{r.account}, nil
+}
+
 func (r *kiroSnapshotAccountRepo) GetByID(_ context.Context, id int64) (*service.Account, error) {
 	if id != r.account.ID {
 		return nil, fmt.Errorf("unexpected account: %d", id)

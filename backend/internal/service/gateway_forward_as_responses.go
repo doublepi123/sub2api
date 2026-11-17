@@ -138,18 +138,33 @@ func (s *GatewayService) ForwardAsResponses(
 		if account.ProxyID != nil && account.Proxy != nil {
 			proxyURL = account.Proxy.URL()
 		}
-		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-		upstreamReq, forwardedBody, buildErr := s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
-		releaseUpstreamCtx()
-		if buildErr != nil {
-			return nil, fmt.Errorf("build upstream request: %w", buildErr)
+		// Build and send the request, recovering a concurrent token rotation once.
+		var upstreamReq *http.Request
+		var forwardedBody []byte
+		for retriedRotatedToken := false; ; {
+			upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
+			var buildErr error
+			upstreamReq, forwardedBody, buildErr = s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
+			releaseUpstreamCtx()
+			if buildErr != nil {
+				return nil, fmt.Errorf("build upstream request: %w", buildErr)
+			}
+			resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+			if err == nil && resp.StatusCode == http.StatusUnauthorized && !retriedRotatedToken {
+				if rotatedToken := s.rotatedClaudeAccessToken(ctx, account, token); rotatedToken != "" {
+					_ = resp.Body.Close()
+					token = rotatedToken
+					retriedRotatedToken = true
+					continue
+				}
+			}
+			break
 		}
 		// Bill the final Anthropic effort after conversion and account normalization.
 		// For example, OpenAI xhigh is forwarded as output_config.effort=max.
 		reasoningEffort = NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
 		reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, mappedModel)
 		upstreamURL = upstreamReq.URL.String()
-		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	}
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -389,6 +404,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
 ) (*ForwardResult, error) {
+	observer := beginUpstreamResponseModelObservation(c)
 	requestID := resp.Header.Get("x-request-id")
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -431,6 +447,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 			continue
 		}
 
+		observer.ObserveAnthropic([]byte(payload))
 		streamStatus.observe(&event, payload)
 		if streamStatus.upstreamErrType != "" {
 			break
@@ -487,7 +504,10 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		_ = resp.Body.Close()
 		writeResponsesError(c, http.StatusBadGateway, "server_error", failure.message)
 		return &ForwardResult{
-			RequestID: requestID, UpstreamHeaders: resp.Header, Usage: usage,
+			UpstreamResponseModel:         observer.Model(),
+			UpstreamResponseModelConflict: observer.Conflict(),
+			UpstreamResponseServiceTier:   observer.ServiceTier(),
+			RequestID:                     requestID, UpstreamHeaders: resp.Header, Usage: usage,
 			Model: originalModel, UpstreamModel: mappedModel, ReasoningEffort: reasoningEffort,
 			Duration: time.Since(startTime),
 		}, failure.err
@@ -536,14 +556,17 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	}
 
 	return &ForwardResult{
-		RequestID:       requestID,
-		UpstreamHeaders: resp.Header,
-		Usage:           usage,
-		Model:           originalModel,
-		UpstreamModel:   mappedModel,
-		ReasoningEffort: reasoningEffort,
-		Stream:          false,
-		Duration:        time.Since(startTime),
+		UpstreamResponseModel:         observer.Model(),
+		UpstreamResponseModelConflict: observer.Conflict(),
+		UpstreamResponseServiceTier:   observer.ServiceTier(),
+		RequestID:                     requestID,
+		UpstreamHeaders:               resp.Header,
+		Usage:                         usage,
+		Model:                         originalModel,
+		UpstreamModel:                 mappedModel,
+		ReasoningEffort:               reasoningEffort,
+		Stream:                        false,
+		Duration:                      time.Since(startTime),
 	}, nil
 }
 
@@ -558,6 +581,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
 ) (*ForwardResult, error) {
+	observer := beginUpstreamResponseModelObservation(c)
 	requestID := resp.Header.Get("x-request-id")
 
 	if s.responseHeaderFilter != nil {
@@ -583,16 +607,19 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:        requestID,
-			UpstreamHeaders:  resp.Header,
-			Usage:            usage,
-			Model:            originalModel,
-			UpstreamModel:    mappedModel,
-			ReasoningEffort:  reasoningEffort,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-			FirstTokenMs:     firstTokenMs,
-			ClientDisconnect: stream.clientDisconnected,
+			UpstreamResponseModel:         observer.Model(),
+			UpstreamResponseModelConflict: observer.Conflict(),
+			UpstreamResponseServiceTier:   observer.ServiceTier(),
+			RequestID:                     requestID,
+			UpstreamHeaders:               resp.Header,
+			Usage:                         usage,
+			Model:                         originalModel,
+			UpstreamModel:                 mappedModel,
+			ReasoningEffort:               reasoningEffort,
+			Stream:                        true,
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  firstTokenMs,
+			ClientDisconnect:              stream.clientDisconnected,
 		}
 	}
 
@@ -670,7 +697,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				if err != nil {
 					continue
 				}
-				out := string(reverseToolNamesIfPresent(c, []byte(sse)))
+				out := reverseToolNamesIfPresentString(c, sse)
 				fmt.Fprint(c.Writer, out) //nolint:errcheck
 			}
 			c.Writer.Flush()
@@ -709,6 +736,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			continue
 		}
 
+		observer.ObserveAnthropic([]byte(payload))
 		stream.observe(&event, payload)
 		if stream.upstreamErrType != "" {
 			break
