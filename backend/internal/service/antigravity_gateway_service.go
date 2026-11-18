@@ -568,6 +568,7 @@ func (s *AntigravityGatewayService) buildClaudeTestRequest(projectID, mappedMode
 
 func (s *AntigravityGatewayService) getClaudeTransformOptions(ctx context.Context) antigravity.TransformOptions {
 	opts := antigravity.DefaultTransformOptions()
+	opts.MoveSystemToContents = antigravitySystemInContentsEnabled()
 	if s.settingService == nil {
 		return opts
 	}

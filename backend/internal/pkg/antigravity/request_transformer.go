@@ -47,6 +47,40 @@ type TransformOptions struct {
 	// 为空时使用默认模板（包含 [IDENTITY_PATCH] 及 SYSTEM_PROMPT_BEGIN 标记）。
 	IdentityPatch string
 	EnableMCPXML  bool
+	// MoveSystemToContents keeps only the gateway's own blocks in systemInstruction
+	// and sends the client's system text as a leading user/model turn pair.
+	// Antigravity rejects some ordinary system-prompt text with a fake 429 but
+	// accepts the same text in contents (same approach as the Claude OAuth mimicry).
+	MoveSystemToContents bool
+}
+
+// SystemInstructionsTurnPrefix and SystemInstructionsAck form the turn pair that
+// carries a client's system prompt when it is moved out of systemInstruction.
+const (
+	SystemInstructionsTurnPrefix = "[System Instructions]\n"
+	SystemInstructionsAck        = "Understood. I will follow these instructions."
+)
+
+// SystemInstructionTurns returns the user/model turns carrying the given system
+// text, or nil when the text is empty.
+func SystemInstructionTurns(text string) []GeminiContent {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return []GeminiContent{
+		{Role: "user", Parts: []GeminiPart{{Text: SystemInstructionsTurnPrefix + text}}},
+		{Role: "model", Parts: []GeminiPart{{Text: SystemInstructionsAck}}},
+	}
+}
+
+func joinPartTexts(parts []GeminiPart) string {
+	texts := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if strings.TrimSpace(p.Text) != "" {
+			texts = append(texts, p.Text)
+		}
+	}
+	return strings.Join(texts, "\n\n")
 }
 
 func DefaultTransformOptions() TransformOptions {
@@ -118,12 +152,16 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	}
 
 	// 2. 构建 systemInstruction（使用 targetModel 而非原始请求模型，确保身份注入基于最终模型）
-	systemInstruction := buildSystemInstruction(claudeReq.System, targetModel, opts, claudeReq.Tools)
+	systemInstruction, clientSystemParts := buildSystemInstructionSplit(claudeReq.System, targetModel, opts, claudeReq.Tools)
 	if len(messageSystemParts) > 0 {
-		if systemInstruction == nil {
-			systemInstruction = &GeminiContent{Role: "user"}
+		if opts.MoveSystemToContents {
+			clientSystemParts = append(clientSystemParts, messageSystemParts...)
+		} else {
+			if systemInstruction == nil {
+				systemInstruction = &GeminiContent{Role: "user"}
+			}
+			systemInstruction.Parts = append(systemInstruction.Parts, messageSystemParts...)
 		}
-		systemInstruction.Parts = append(systemInstruction.Parts, messageSystemParts...)
 	}
 
 	// 3. 构建 generationConfig
@@ -146,10 +184,14 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	tools := buildTools(claudeReq.Tools)
 
 	// 5. 构建内部请求
+	// 总是生成 sessionId，基于原始用户消息内容（不含移入的 system 指令）
+	sessionID := generateStableSessionID(contents)
+	if turns := SystemInstructionTurns(joinPartTexts(clientSystemParts)); len(turns) > 0 {
+		contents = append(turns, contents...)
+	}
 	innerRequest := GeminiRequest{
-		Contents: contents,
-		// 总是生成 sessionId，基于用户消息内容
-		SessionID: generateStableSessionID(contents),
+		Contents:  contents,
+		SessionID: sessionID,
 	}
 
 	// toolConfig must always be present: upstream rejects requests without it,
@@ -385,6 +427,14 @@ func stripClaudeAttribution(text string) string {
 
 // buildSystemInstruction 构建 systemInstruction（与 Antigravity-Manager 保持一致）
 func buildSystemInstruction(system json.RawMessage, modelName string, opts TransformOptions, tools []ClaudeTool) *GeminiContent {
+	si, _ := buildSystemInstructionSplit(system, modelName, opts, tools)
+	return si
+}
+
+// buildSystemInstructionSplit builds systemInstruction; with MoveSystemToContents the
+// client's own system parts are returned separately instead of being included, and
+// the gateway identity is always injected because the client's identity moves out.
+func buildSystemInstructionSplit(system json.RawMessage, modelName string, opts TransformOptions, tools []ClaudeTool) (*GeminiContent, []GeminiPart) {
 	var parts []GeminiPart
 
 	// 先解析用户的 system prompt，检测是否已包含 Antigravity identity
@@ -427,6 +477,11 @@ func buildSystemInstruction(system json.RawMessage, modelName string, opts Trans
 		}
 	}
 
+	if opts.MoveSystemToContents {
+		userHasAntigravityIdentity = false
+		opts.EnableIdentityPatch = true
+	}
+
 	// 仅在用户未提供 Antigravity identity 时注入
 	if opts.EnableIdentityPatch && !userHasAntigravityIdentity {
 		identityPatch := strings.TrimSpace(opts.IdentityPatch)
@@ -441,7 +496,12 @@ func buildSystemInstruction(system json.RawMessage, modelName string, opts Trans
 	}
 
 	// 添加用户的 system prompt
-	parts = append(parts, userSystemParts...)
+	var moved []GeminiPart
+	if opts.MoveSystemToContents {
+		moved = userSystemParts
+	} else {
+		parts = append(parts, userSystemParts...)
+	}
 
 	// 检测是否有 MCP 工具，如有且启用了 MCP XML 注入则注入 XML 调用协议
 	if opts.EnableMCPXML && hasMCPTools(tools) {
@@ -454,13 +514,13 @@ func buildSystemInstruction(system json.RawMessage, modelName string, opts Trans
 	}
 
 	if len(parts) == 0 {
-		return nil
+		return nil, moved
 	}
 
 	return &GeminiContent{
 		Role:  "user",
 		Parts: parts,
-	}
+	}, moved
 }
 
 // buildContents 构建 contents

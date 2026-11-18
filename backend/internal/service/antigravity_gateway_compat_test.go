@@ -202,6 +202,7 @@ func TestAntigravityCompatToolSchemaItemsMatchSelectedType(t *testing.T) {
 
 func TestAntigravitySystemIdentityAcrossProtocols(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv(antigravitySystemInContentsEnv, "off")
 	const task = "\nKeep GPT-5.6, gpt-6 and Claude model ids unchanged."
 	for _, identity := range []string{"You are Codex, based on GPT-5.6.", "You are Codex, an agent based on GPT-6.", "You are GPT-6 running in the Codex CLI.", "You are Claude Code, Anthropic's official CLI for Claude."} {
 		for _, model := range []string{"gemini-3.1-pro-high", "claude-sonnet-4-6"} {
@@ -269,6 +270,7 @@ func TestAntigravitySystemIdentityAcrossProtocols(t *testing.T) {
 
 func TestAntigravitySystemIdentityMultipleBlocksForward(test *testing.T) {
 	gin.SetMode(gin.TestMode)
+	test.Setenv(antigravitySystemInContentsEnv, "off")
 	const model = "gemini-3.1-pro-high"
 	const stale = "You are Codex, based on GPT-6."
 	const otherStale = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -1805,6 +1807,7 @@ func TestAntigravityCompatInterleavedThoughtChunksResetIdleTimeout(t *testing.T)
 
 func TestAntigravityCompatChatCompletions_RewritesOpenCodeSessionMoveInSystem(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv(antigravitySystemInContentsEnv, "off")
 	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{antigravityCompatSuccessResponse()}}
 	svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, upstream)
 	account := newAntigravityCompatAccount(AccountTypeOAuth)
