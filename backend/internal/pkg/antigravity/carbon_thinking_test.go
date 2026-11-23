@@ -68,6 +68,22 @@ func TestCarbonTransformUsesMappedModelForThinking(t *testing.T) {
 	require.NotContains(t, string(data), `stopSequences`)
 }
 
+func TestNeonGenerationThinkingDoesNotSendBudget(t *testing.T) {
+	for _, tc := range []struct{ model, level string }{
+		{"gemini-4-neon", "xhigh"},
+		{"gemini-4-neon-medium", ""},
+	} {
+		cfg := buildGenerationConfig(&ClaudeRequest{
+			Model:        tc.model,
+			Thinking:     &ThinkingConfig{Type: "enabled", BudgetTokens: 4096},
+			OutputConfig: &ClaudeOutputConfig{Effort: "xhigh"},
+		})
+		require.NotNil(t, cfg.ThinkingConfig)
+		require.Equal(t, tc.level, cfg.ThinkingConfig.ThinkingLevel)
+		require.Zero(t, cfg.ThinkingConfig.ThinkingBudget)
+	}
+}
+
 func TestHydrogenGenerationThinkingLevels(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, level string

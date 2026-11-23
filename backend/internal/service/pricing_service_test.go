@@ -832,6 +832,8 @@ func TestBillingService_Gemini4HydrogenFallbackIsBillable(t *testing.T) {
 		{"models/gemini-4-hydrogen", "", 1.5, 7.5, 0.075},
 		{"projects/p/locations/global/publishers/google/models/gemini-4-hydrogen", "", 1.5, 7.5, 0.075},
 		{"gemini-4-hydrogen", "priority", 2.7, 13.5, 0.135},
+		{"gemini-4-neon", "", 3, 15, 0.15},
+		{"models/gemini-4-neon-xhigh", "priority", 5.4, 27, 0.27},
 	} {
 		t.Run(tc.model+"/"+tc.serviceTier, func(t *testing.T) {
 			cost, err := svc.CalculateCostWithServiceTier(tc.model, tokens, 1, tc.serviceTier)

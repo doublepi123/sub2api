@@ -290,6 +290,18 @@ describe('useModelWhitelist', () => {
     ]))
   })
 
+  it('exposes Neon tiers for Antigravity and a dynamic bare-name preset', () => {
+    const base = 'gemini-4-neon'
+    const tiers = ['low', 'medium', 'high', 'xhigh'].map(level => `${base}-${level}`)
+    expect(getModelsByPlatform('gemini')).toContain(base)
+    expect(getModelsByPlatform('antigravity')).not.toContain(base)
+    expect(getModelsByPlatform('antigravity')).toEqual(expect.arrayContaining(tiers))
+    const mappings = getPresetMappingsByPlatform('antigravity')
+    expect(mappings).toEqual(expect.arrayContaining([base, ...tiers].map(model =>
+      expect.objectContaining({ from: model, to: model })
+    )))
+  })
+
   it('Gemini 4 Hydrogen 在 gemini 与 antigravity 平台使用对应真实模型 ID 与预设映射', () => {
     expect(getModelsByPlatform('gemini')).toContain('gemini-4-hydrogen')
     const agModels = getModelsByPlatform('antigravity')

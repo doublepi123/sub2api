@@ -835,7 +835,7 @@ func ResolveClaudeThinkingLevel(req *ClaudeRequest) string {
 }
 
 // gemini4LevelThinkingConfig preserves the upstream default when no effort is specified.
-// Carbon caps at "high"; Hydrogen additionally supports "xhigh".
+// Carbon caps at "high"; Hydrogen and Neon also support "xhigh".
 // https://aistudio.google.com/docs/whats-new-gemini-4-carbon
 // https://aistudio.google.com/docs/whats-new-gemini-4-hydrogen
 func gemini4LevelThinkingConfig(req *ClaudeRequest, bareModel, allowXHigh bool) *GeminiThinkingConfig {
@@ -873,18 +873,19 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 		config.MaxOutputTokens = req.MaxTokens
 	}
 
-	// Carbon and Hydrogen accept thinking levels rather than token budgets. Tiered IDs,
+	// Carbon, Hydrogen and Neon accept thinking levels rather than token budgets. Tiered IDs,
 	// when supplied by the account catalog, already select the level upstream.
 	normalizedModel := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(req.Model)), "models/")
 	isCarbon := normalizedModel == "gemini-4-carbon" || normalizedModel == "gemini-4-carbon-low" || normalizedModel == "gemini-4-carbon-medium" || normalizedModel == "gemini-4-carbon-high"
 	isHydrogen := normalizedModel == "gemini-4-hydrogen" || normalizedModel == "gemini-4-hydrogen-low" || normalizedModel == "gemini-4-hydrogen-medium" || normalizedModel == "gemini-4-hydrogen-high" || normalizedModel == "gemini-4-hydrogen-xhigh"
-	if isCarbon || isHydrogen {
-		bareModel := normalizedModel == "gemini-4-carbon" || normalizedModel == "gemini-4-hydrogen"
-		config.ThinkingConfig = gemini4LevelThinkingConfig(req, bareModel, isHydrogen)
+	isNeon := normalizedModel == "gemini-4-neon" || normalizedModel == "gemini-4-neon-low" || normalizedModel == "gemini-4-neon-medium" || normalizedModel == "gemini-4-neon-high" || normalizedModel == "gemini-4-neon-xhigh"
+	if isCarbon || isHydrogen || isNeon {
+		bareModel := normalizedModel == "gemini-4-carbon" || normalizedModel == "gemini-4-hydrogen" || normalizedModel == "gemini-4-neon"
+		config.ThinkingConfig = gemini4LevelThinkingConfig(req, bareModel, isHydrogen || isNeon)
 	}
 
 	// Thinking 配置
-	if !isCarbon && !isHydrogen && req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive") {
+	if !isCarbon && !isHydrogen && !isNeon && req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive") {
 		config.ThinkingConfig = &GeminiThinkingConfig{
 			IncludeThoughts: true,
 		}

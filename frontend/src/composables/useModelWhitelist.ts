@@ -72,7 +72,8 @@ const geminiModels = [
   'gemini-3.8-flash',
   'gemini-4-argon',
   'gemini-4-carbon',
-  'gemini-4-hydrogen'
+  'gemini-4-hydrogen',
+  'gemini-4-neon'
 ]
 
 // Antigravity 官方支持的模型（精确匹配）
@@ -121,6 +122,10 @@ const antigravityModels = [
   'gemini-4-hydrogen-medium',
   'gemini-4-hydrogen-high',
   'gemini-4-hydrogen-xhigh',
+  'gemini-4-neon-low',
+  'gemini-4-neon-medium',
+  'gemini-4-neon-high',
+  'gemini-4-neon-xhigh',
   // 其他
   'gpt-oss-120b-medium',
   'tab_flash_lite_preview'
@@ -417,6 +422,11 @@ const antigravityPresetMappings = [
   { label: '4 Hydrogen High', from: 'gemini-4-hydrogen-high', to: 'gemini-4-hydrogen-high', color: 'bg-teal-100 text-teal-700 hover:bg-teal-200 dark:bg-teal-900/30 dark:text-teal-400' },
   { label: '4 Hydrogen Medium', from: 'gemini-4-hydrogen-medium', to: 'gemini-4-hydrogen-medium', color: 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400' },
   { label: '4 Hydrogen Low', from: 'gemini-4-hydrogen-low', to: 'gemini-4-hydrogen-low', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },
+  { label: '4 Neon', from: 'gemini-4-neon', to: 'gemini-4-neon', color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400' },
+  { label: '4 Neon XHigh', from: 'gemini-4-neon-xhigh', to: 'gemini-4-neon-xhigh', color: 'bg-rose-100 text-rose-700 hover:bg-rose-200 dark:bg-rose-900/30 dark:text-rose-400' },
+  { label: '4 Neon High', from: 'gemini-4-neon-high', to: 'gemini-4-neon-high', color: 'bg-teal-100 text-teal-700 hover:bg-teal-200 dark:bg-teal-900/30 dark:text-teal-400' },
+  { label: '4 Neon Medium', from: 'gemini-4-neon-medium', to: 'gemini-4-neon-medium', color: 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400' },
+  { label: '4 Neon Low', from: 'gemini-4-neon-low', to: 'gemini-4-neon-low', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },
   { label: '3.8 Flash', from: 'gemini-3.8-flash', to: 'gemini-3.8-flash', color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400' },
   { label: '3.8 Flash High', from: 'gemini-3.8-flash-high', to: 'gemini-3.8-flash-high', color: 'bg-teal-100 text-teal-700 hover:bg-teal-200 dark:bg-teal-900/30 dark:text-teal-400' },
   { label: 'Opus 5.5', from: 'claude-opus-5-5', to: 'claude-opus-5-5', color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400' },

@@ -208,6 +208,11 @@ func TestGeminiThinkingLevelFromClaudeRequest_HonorsOutputEffortAndCarbonTiers(t
 
 	// 默认映射（rawMapping 为空）与持久化默认映射下，裸 gemini-4-hydrogen 应支持按 effort 动态分档，缺省落到 -high。
 	defaultAccount := &Account{ID: 2, Name: "ag-default", Platform: PlatformAntigravity}
+	for effort, tier := range map[string]string{"": "high", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh"} {
+		require.Equal(t, "gemini-4-neon-"+tier, svc.getMappedModelForThinkingLevel(defaultAccount, "gemini-4-neon", effort))
+	}
+	neonAlias := newAntigravityAccountWithMapping(map[string]string{"gemini-4-neon": "gemini-4-neon-high"})
+	require.Equal(t, "gemini-4-neon-high", svc.getMappedModelForThinkingLevel(neonAlias, "gemini-4-neon", "low"))
 	for _, tc := range []struct {
 		effort string
 		want   string

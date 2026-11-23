@@ -30,6 +30,7 @@ var DefaultModels = []Model{
 	{ID: "gemini-4-argon", Type: "model", DisplayName: "Gemini 4 Argon", CreatedAt: ""},
 	{ID: "gemini-4-carbon", Type: "model", DisplayName: "Gemini 4 Carbon", CreatedAt: ""},
 	{ID: "gemini-4-hydrogen", Type: "model", DisplayName: "Gemini 4 Hydrogen", CreatedAt: ""},
+	{ID: "gemini-4-neon", Type: "model", DisplayName: "Gemini 4 Neon", CreatedAt: ""},
 }
 
 // GoogleOneModels is the conservative model set exposed for legacy Google One

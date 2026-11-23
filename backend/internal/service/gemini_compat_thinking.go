@@ -121,7 +121,7 @@ func claudeRequestEnablesThinking(claudeBody []byte) bool {
 
 // geminiThinkingLevelFor 把思考意图映射为 thinkingLevel；返回空串表示交给模型默认档位。
 // minimal 只发给 flash 系列，其余模型用 low；medium 只发给 flash 系列、Gemini 3.1 Pro、
-// Gemini 4 Carbon 与 Gemini 4 Hydrogen，其余模型用 high；xhigh 只发给 Gemini 4 Hydrogen，
+// Gemini 4 Carbon、Hydrogen 和 Neon，其余模型用 high；xhigh 只发给 Hydrogen 和 Neon，
 // 其余模型降级为 high。未指定档位时保留上游默认值。
 func geminiThinkingLevelFor(model string, intent claudeThinkingIntent) string {
 	tier := intent.tier
@@ -137,13 +137,14 @@ func geminiThinkingLevelFor(model string, intent claudeThinkingIntent) string {
 	}
 	name := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "models/")
 	isFlash := strings.Contains(name, "flash")
-	if tier == "xhigh" && name != "gemini-4-hydrogen" {
+	supportsXHigh := name == antigravityHydrogenModelBase || name == antigravityNeonModelBase
+	if tier == "xhigh" && !supportsXHigh {
 		tier = "high"
 	}
 	if tier == "minimal" && !isFlash {
 		tier = "low"
 	}
-	if tier == "medium" && !isFlash && !strings.HasPrefix(name, "gemini-3.1-pro") && name != "gemini-4-carbon" && name != "gemini-4-hydrogen" {
+	if tier == "medium" && !isFlash && !strings.HasPrefix(name, "gemini-3.1-pro") && name != antigravityCarbonModelBase && !supportsXHigh {
 		tier = "high"
 	}
 	return tier

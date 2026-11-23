@@ -244,7 +244,7 @@ func geminiThinkingLevelFromClaudeThinking(thinking *antigravity.ThinkingConfig)
 
 // geminiThinkingLevelFromReasoningEffort uses the same variant scale for
 // OpenAI reasoning effort and Anthropic output_config.effort. xhigh/max select
-// the -xhigh variant where the account has one (Gemini 4 Hydrogen); the
+// the -xhigh variant where the account has one (Gemini 4 Hydrogen and Neon); the
 // resolver falls back to -high for families without it.
 func geminiThinkingLevelFromReasoningEffort(effort *string) (string, bool) {
 	if effort == nil {
@@ -304,15 +304,21 @@ const antigravityCarbonModelBase = "gemini-4-carbon"
 
 // antigravityHydrogenModelBase 是 Antigravity 上 Hydrogen 的模型族前缀：
 // 上游只登记 -low/-medium/-high/-xhigh 四档后缀，裸名同样只是客户端别名。
-const antigravityHydrogenModelBase = "gemini-4-hydrogen"
+const (
+	antigravityHydrogenModelBase = "gemini-4-hydrogen"
+	antigravityNeonModelBase     = "gemini-4-neon"
+)
 
 // isAntigravityLevelOnlyGeminiModel 判断模型名（含 models/ 前缀与档位后缀）是否属于
-// 只接受 thinkingLevel 的 Carbon / Hydrogen 族。
+// 只接受 thinkingLevel 的 Carbon / Hydrogen / Neon 族。
 func isAntigravityLevelOnlyGeminiModel(model string) bool {
 	name := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(model, "models/")))
 	switch {
 	case strings.HasPrefix(name, antigravityHydrogenModelBase):
 		rest := strings.TrimPrefix(name, antigravityHydrogenModelBase)
+		return rest == "" || rest == "-low" || rest == "-medium" || rest == "-high" || rest == "-xhigh"
+	case strings.HasPrefix(name, antigravityNeonModelBase):
+		rest := strings.TrimPrefix(name, antigravityNeonModelBase)
 		return rest == "" || rest == "-low" || rest == "-medium" || rest == "-high" || rest == "-xhigh"
 	case strings.HasPrefix(name, antigravityCarbonModelBase):
 		rest := strings.TrimPrefix(name, antigravityCarbonModelBase)
@@ -321,8 +327,8 @@ func isAntigravityLevelOnlyGeminiModel(model string) bool {
 	return false
 }
 
-// normalizeCarbonNativeThinking 归一 Carbon / Hydrogen 原生请求里的 legacy thinkingBudget：
-// 这两个模型族只接受 thinkingLevel，带 thinkingBudget 的请求可能被上游拒绝，
+// normalizeCarbonNativeThinking 归一 Carbon / Hydrogen / Neon 原生请求里的 legacy thinkingBudget：
+// 这些模型族只接受 thinkingLevel，带 thinkingBudget 的请求可能被上游拒绝，
 // 因此删除 thinkingBudget，并在裸名（尚未落到后缀）时把它换算成 thinkingLevel。
 // 已经带后缀的请求由后缀决定档位，只删除 budget，不再写入 level。
 func normalizeCarbonNativeThinking(body []byte, mappedModel string) []byte {
