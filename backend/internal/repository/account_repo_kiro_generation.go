@@ -11,7 +11,7 @@ import (
 var _ service.KiroCredentialGenerationRepository = (*accountRepository)(nil)
 
 func (r *accountRepository) UpdateWithKiroCredentialGeneration(ctx context.Context, account *service.Account) error {
-	return r.updateAccount(ctx, account, nil, nil, account.RateMultiplier, true)
+	return r.updateAccount(ctx, account, service.AccountBillingSettingsUpdate{RateMultiplier: account.RateMultiplier, SetName: true, SetNotes: true}, true)
 }
 
 func stripKiroManagedExtra(extra map[string]any) map[string]any {
