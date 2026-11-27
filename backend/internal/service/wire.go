@@ -254,6 +254,7 @@ func ProvideAccountUsageService(
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAIGatewayService *OpenAIGatewayService,
 	gatewayService *GatewayService,
+	opsService *OpsService,
 ) *AccountUsageService {
 	service := NewAccountUsageService(
 		accountRepo,
@@ -271,6 +272,9 @@ func ProvideAccountUsageService(
 	service.agentIdentityWS = openAIGatewayService
 	service.SetKiroUsageFetcher(gatewayService)
 	service.SetKiroModelCatalogFetcher(gatewayService)
+	if opsService != nil {
+		service.opsMonitoring = opsService
+	}
 	return service
 }
 
